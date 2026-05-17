@@ -8,10 +8,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-__all__ = ["Settings", "get_settings", "reset_settings", "ensure_dirs"]
+__all__ = ["Settings", "get_settings", "reset_settings", "ensure_dirs", "set_db_override"]
 
 
 _DEFAULT_HOME = Path("~/.local/share/reelgrep").expanduser().resolve()
+_db_override: Path | None = None
 
 
 def _expand(value: str) -> Path:
@@ -38,7 +39,10 @@ def _build_settings() -> Settings:
     ffprobe_env = os.environ.get("REELGREP_FFPROBE")
 
     home = _expand(home_env) if home_env else _DEFAULT_HOME
-    db_path = _expand(db_env) if db_env else home / "index.sqlite"
+    if _db_override is not None:
+        db_path = _db_override
+    else:
+        db_path = _expand(db_env) if db_env else home / "index.sqlite"
     cache_dir = _expand(cache_env) if cache_env else home / "cache"
 
     return Settings(
@@ -61,7 +65,16 @@ def get_settings() -> Settings:
 
 
 def reset_settings() -> None:
-    """Clear the cached Settings so the next get_settings() rereads env vars."""
+    """Clear the cached Settings and any process-level overrides."""
+    global _db_override
+    _db_override = None
+    _cached_settings.cache_clear()
+
+
+def set_db_override(path: Path | str | None) -> None:
+    """Set a process-level db_path that wins over REELGREP_DB; pass None to clear."""
+    global _db_override
+    _db_override = _expand(str(path)) if path is not None else None
     _cached_settings.cache_clear()
 
 
