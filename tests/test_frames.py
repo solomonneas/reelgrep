@@ -138,9 +138,10 @@ def test_sample_every_generates_expected_timestamps(
 
     result = sample_every(video, out_dir, interval_seconds=2.0)
 
+    # Stops strictly before duration_ms (ffmpeg returns no frame at EOF).
     timestamps = [f.timestamp_ms for f in result]
-    assert timestamps == [0, 2000, 4000, 6000, 8000, 10000]
-    assert len(result) == 6
+    assert timestamps == [0, 2000, 4000, 6000, 8000]
+    assert len(result) == 5
 
     for frame in result:
         assert frame.sampling_strategy == "every_n"
@@ -148,7 +149,7 @@ def test_sample_every_generates_expected_timestamps(
         assert frame.width is None
         assert frame.height is None
 
-    expected_ss = ["0.000", "2.000", "4.000", "6.000", "8.000", "10.000"]
+    expected_ss = ["0.000", "2.000", "4.000", "6.000", "8.000"]
     for call, ss in zip(mock_ffmpeg.calls, expected_ss, strict=True):
         assert "-ss" in call
         idx = call.index("-ss")

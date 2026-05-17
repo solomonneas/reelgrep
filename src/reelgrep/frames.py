@@ -67,7 +67,10 @@ def sample_every(
     step_ms = int(interval_seconds * 1000)
     timestamps: list[int] = []
     ts = 0
-    while ts <= duration_ms:
+    # Stop strictly before duration_ms - ffmpeg silently emits nothing when
+    # seeking to or past the last frame, leaving downstream consumers with a
+    # phantom Frame whose .path does not exist on disk.
+    while ts < duration_ms:
         timestamps.append(ts)
         ts += step_ms
 
@@ -92,6 +95,8 @@ def sample_every(
             ],
             binary=ffmpeg_binary,
         )
+        if not out_file.exists():
+            continue
         frames.append(
             Frame(
                 timestamp_ms=ts_ms,
