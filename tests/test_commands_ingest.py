@@ -306,6 +306,110 @@ def test_nonexistent_path_errors(tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
+def test_transcribe_flag_runs_whisper_when_no_subs(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_video: Path,
+    tmp_path: Path,
+) -> None:
+    fake_meta = _make_meta()
+    fake_frames = _make_frames(tmp_path)
+    whisper_track = SubtitleTrack(
+        source="whisper",
+        stream_index=None,
+        language="en",
+        format="whisper",
+        cues=[
+            SubtitleCue(start_ms=0, end_ms=2000, text="hello whisper", language="en"),
+            SubtitleCue(
+                start_ms=2500, end_ms=4500, text="kubernetes again", language="en"
+            ),
+        ],
+    )
+    call_count = {"n": 0}
+
+    def fake_whisper(path: Any, *, model_size: str = "small") -> SubtitleTrack:
+        call_count["n"] += 1
+        return whisper_track
+
+    monkeypatch.setattr(
+        "reelgrep.commands.ingest.probe",
+        lambda p: fake_meta.model_copy(update={"path": str(p)}),
+    )
+    monkeypatch.setattr("reelgrep.commands.ingest.extract_embedded", lambda *a, **k: [])
+    monkeypatch.setattr("reelgrep.commands.ingest.find_sidecars", lambda p: [])
+    monkeypatch.setattr(
+        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+    )
+    monkeypatch.setattr("reelgrep.commands.ingest.run_whisper", fake_whisper)
+
+    runner = CliRunner()
+    result = runner.invoke(ingest, [str(fake_video), "--transcribe"])
+    assert result.exit_code == 0, result.output
+    assert call_count["n"] == 1
+    assert "transcribed 2 cues with whisper:small" in result.output
+
+    conn = _open_db()
+    try:
+        rows = conn.execute(
+            "SELECT source, text FROM subtitles ORDER BY start_ms"
+        ).fetchall()
+        fts = conn.execute(
+            "SELECT rowid FROM subtitles_fts WHERE subtitles_fts MATCH 'kubernetes'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 2
+    assert all(r["source"] == "whisper" for r in rows)
+    assert len(fts) == 1
+
+
+def test_transcribe_flag_skips_when_sidecar_subs_present(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_video: Path,
+    tmp_path: Path,
+) -> None:
+    fake_meta = _make_meta()
+    track = _make_track()
+    fake_frames = _make_frames(tmp_path)
+    sidecar = tmp_path / "movie.en.srt"
+    sidecar.write_text("dummy", encoding="utf-8")
+
+    call_count = {"n": 0}
+
+    def fake_whisper(*_a: Any, **_k: Any) -> SubtitleTrack:
+        call_count["n"] += 1
+        raise AssertionError("whisper should not run when sidecar subs exist")
+
+    monkeypatch.setattr(
+        "reelgrep.commands.ingest.probe",
+        lambda p: fake_meta.model_copy(update={"path": str(p)}),
+    )
+    monkeypatch.setattr("reelgrep.commands.ingest.extract_embedded", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "reelgrep.commands.ingest.find_sidecars", lambda p: [sidecar]
+    )
+    monkeypatch.setattr("reelgrep.commands.ingest.parse_sidecar", lambda p: track)
+    monkeypatch.setattr(
+        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+    )
+    monkeypatch.setattr("reelgrep.commands.ingest.run_whisper", fake_whisper)
+
+    runner = CliRunner()
+    result = runner.invoke(ingest, [str(fake_video), "--transcribe"])
+    assert result.exit_code == 0, result.output
+    assert call_count["n"] == 0
+    # No "transcribed N cues" line should appear in the summary.
+    assert "transcribed" not in result.output
+
+    conn = _open_db()
+    try:
+        rows = conn.execute("SELECT source FROM subtitles").fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 2
+    assert all(r["source"] == "sidecar" for r in rows)
+
+
 def test_extract_embedded_ffmpeg_error_is_warned_not_fatal(
     monkeypatch: pytest.MonkeyPatch,
     fake_video: Path,

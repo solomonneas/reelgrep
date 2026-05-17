@@ -17,6 +17,8 @@ from reelgrep.frames import sample_every
 from reelgrep.hashing import file_hash
 from reelgrep.probe import probe
 from reelgrep.subtitles import extract_embedded, find_sidecars, parse_sidecar
+from reelgrep.transcribe import TranscribeError
+from reelgrep.transcribe import transcribe as run_whisper
 
 __all__ = ["ingest"]
 
@@ -44,6 +46,19 @@ def _hash_slice(digest: str) -> str:
 @click.option("--no-subtitles", is_flag=True, default=False)
 @click.option("--no-frames", is_flag=True, default=False)
 @click.option("--force", is_flag=True, default=False)
+@click.option(
+    "--transcribe",
+    "do_transcribe",
+    is_flag=True,
+    default=False,
+    help="After ingest, run Whisper transcription if no embedded/sidecar subs were found.",
+)
+@click.option(
+    "--transcribe-model",
+    default="small",
+    show_default=True,
+    help="Whisper model size when --transcribe is set.",
+)
 def ingest(
     video_path: Path,
     interval_seconds: float,
@@ -51,6 +66,8 @@ def ingest(
     no_subtitles: bool,
     no_frames: bool,
     force: bool,
+    do_transcribe: bool,
+    transcribe_model: str,
 ) -> None:
     """Ingest a video: probe, extract subtitles, sample frames, write to local index."""
     resolved = video_path.resolve()
@@ -114,6 +131,7 @@ def ingest(
 
         tracks: list = []
         total_cues = 0
+        transcribed_cues = 0
 
         if not no_subtitles:
             subs_dir.mkdir(parents=True, exist_ok=True)
@@ -163,6 +181,49 @@ def ingest(
                         )
                         total_cues += 1
 
+        if do_transcribe and not no_subtitles:
+            # Only transcribe when no embedded or sidecar subs were inserted.
+            existing_subs = conn.execute(
+                "SELECT COUNT(*) FROM subtitles WHERE video_id = ?",
+                (video_id,),
+            ).fetchone()[0]
+            if existing_subs == 0:
+                click.echo(
+                    f"no subs found; transcribing with whisper:{transcribe_model}...",
+                    err=True,
+                )
+                try:
+                    whisper_track = run_whisper(
+                        resolved, model_size=transcribe_model
+                    )
+                except TranscribeError as exc:
+                    click.echo(f"transcribe failed: {exc}", err=True)
+                else:
+                    with conn:
+                        for cue in whisper_track.cues:
+                            wcur = conn.execute(
+                                """
+                                INSERT INTO subtitles (
+                                    video_id, language, source, stream_index,
+                                    start_ms, end_ms, text
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    video_id,
+                                    cue.language or whisper_track.language,
+                                    "whisper",
+                                    None,
+                                    cue.start_ms,
+                                    cue.end_ms,
+                                    cue.text,
+                                ),
+                            )
+                            conn.execute(
+                                "INSERT INTO subtitles_fts(rowid, text) VALUES (?, ?)",
+                                (wcur.lastrowid, cue.text),
+                            )
+                            transcribed_cues += 1
+
         sampled_frames: list = []
         if not no_frames:
             frames_dir.mkdir(parents=True, exist_ok=True)
@@ -194,5 +255,7 @@ def ingest(
     click.echo(f"hash:     {digest}")
     click.echo(f"duration: {timecode.format(meta.duration_ms)}")
     click.echo(f"subtitle tracks: {len(tracks)} (cues: {total_cues})")
+    if transcribed_cues:
+        click.echo(f"transcribed {transcribed_cues} cues with whisper:{transcribe_model}")
     click.echo(f"frames sampled: {len(sampled_frames)}")
     click.echo(f"db:       {settings.db_path}")

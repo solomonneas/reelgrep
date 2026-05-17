@@ -32,13 +32,14 @@ def test_help_lists_all_commands():
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
     for name in ("ingest", "export-clip", "make-gif", "search-subtitles",
-                 "contact-sheet", "find-person", "info", "ls", "jellyfin"):
+                 "contact-sheet", "find-person", "transcribe", "info", "ls",
+                 "jellyfin"):
         assert name in result.output
 
 
 @pytest.mark.parametrize("subcmd", [
     "ingest", "export-clip", "make-gif", "search-subtitles",
-    "contact-sheet", "find-person", "info", "ls",
+    "contact-sheet", "find-person", "transcribe", "info", "ls",
 ])
 def test_subcommand_help_works(subcmd):
     runner = CliRunner()
