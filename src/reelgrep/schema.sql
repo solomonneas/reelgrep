@@ -1,5 +1,5 @@
 CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
-INSERT INTO schema_version VALUES (1);
+INSERT INTO schema_version VALUES (2);
 
 CREATE TABLE videos (
   id INTEGER PRIMARY KEY,
@@ -22,7 +22,7 @@ CREATE TABLE subtitles (
   id INTEGER PRIMARY KEY,
   video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
   language TEXT,
-  source TEXT NOT NULL CHECK(source IN ('embedded','sidecar')),
+  source TEXT NOT NULL CHECK(source IN ('embedded','sidecar','whisper')),
   stream_index INTEGER,
   start_ms INTEGER NOT NULL,
   end_ms INTEGER NOT NULL,
