@@ -2,7 +2,7 @@
 
 > Local video search and media analysis. Find people, outfits, objects, scenes, spoken phrases, and useful clips inside your own video library.
 
-Status: v0.1.0. CLI works end-to-end; web UI and TypeScript MCP wrapper are planned for later releases.
+Status: v0.2.0. Whisper transcription added so screen recordings and other videos without embedded subtitles are now searchable. Web UI and TypeScript MCP wrapper are planned for later releases.
 
 reelgrep indexes video files on disk: it runs `ffprobe` for metadata, samples frames at a configurable interval, builds contact sheets, extracts embedded and sidecar subtitles into a SQLite FTS5 table you can grep, and exports clips, screenshots, and animated WebP loops with a JSON manifest sidecar for each output. Person and object detection is pluggable, with a face-embedding backend and an Ollama vision-LLM backend; both accept confirmed positive AND negative reference images so lookalikes do not slip through. Everything runs on your machine - frames, clips, manifests, and the index all stay on disk under your home directory by default, and nothing leaves the box without you configuring it to.
 
@@ -26,8 +26,11 @@ pipx install "reelgrep[face]"
 # With Ollama vision-LLM backend (httpx; assumes ollama serve is reachable):
 pipx install "reelgrep[vision]"
 
+# With local Whisper transcription (faster-whisper + ctranslate2, ~75MB-2.9GB depending on model):
+pipx install "reelgrep[whisper]"
+
 # Everything:
-pipx install "reelgrep[face,vision]"
+pipx install "reelgrep[face,vision,whisper]"
 ```
 
 System dependency: `ffmpeg` and `ffprobe` must be on PATH. On Ubuntu:
@@ -78,7 +81,30 @@ Output:
 3 matches
 ```
 
-Requires either embedded subtitles or a sidecar `.srt`/`.vtt` next to the video. Whisper-based transcription for videos without subtitles is planned for v0.2 and is not included in this release.
+Requires either embedded subtitles, a sidecar `.srt`/`.vtt` next to the video, or Whisper-transcribed cues (see next section). The `[whisper]` extra adds local transcription so screen recordings, lectures, and other un-captioned videos become searchable.
+
+### Transcribe a video without subtitles
+
+```bash
+reelgrep transcribe ~/Videos/lecture.mp4 --model tiny
+```
+
+Output:
+
+```text
+transcribing lecture.mp4 with whisper:tiny...
+transcribed: /home/you/Videos/lecture.mp4
+language:    en
+model:       whisper:tiny
+cues:        165
+span:        00:00:01.460 -> 00:18:44.070
+```
+
+Real numbers from an 18-minute 720p lecture screen recording: `tiny` model finishes in ~26 seconds on CPU and produces searchable cues. Larger models (`small`, `medium`, `large-v3`, `large-v3-turbo`) trade speed for accuracy. After transcribing, `reelgrep search-subtitles` works against the new cues immediately.
+
+The cues are stored alongside any embedded or sidecar subtitles with `source='whisper'`, so the index treats them uniformly. Re-running transcribe on the same video is a no-op unless you pass `--force`. Pass `--no-db` to print the cues as JSON to stdout instead of writing to the index.
+
+You can also fold transcription into ingest itself: `reelgrep ingest ~/lecture.mp4 --transcribe` runs Whisper only when the normal embedded/sidecar pass finds nothing.
 
 ### Find a specific person
 
@@ -191,6 +217,7 @@ Switch engines with `--backend ollama_vision` on the `find-person` command. Both
 | `reelgrep make-gif <video> --start --duration --out` | Render an animated WebP loop. See [Render a webp loop](#render-a-webp-loop). |
 | `reelgrep contact-sheet <video> --out` | Build a grid of thumbnails. See [Build a contact sheet](#build-a-contact-sheet). |
 | `reelgrep search-subtitles <video> <query>` | FTS5 search over indexed subtitle cues. See [Search what was said](#search-what-was-said). |
+| `reelgrep transcribe <video> --model` | Whisper-transcribe and index cues for an un-captioned video. See [Transcribe a video without subtitles](#transcribe-a-video-without-subtitles). |
 | `reelgrep find-person <video> --label --positive --out` | Locate frames containing a person. See [Find a specific person](#find-a-specific-person). |
 | `reelgrep jellyfin resolve <query>` | Resolve a Jellyfin item to its local file path for piping. |
 | `reelgrep --db PATH <subcommand>` | One-shot override for the index database path. |
@@ -201,7 +228,7 @@ Switch engines with `--backend ollama_vision` on the `find-person` command. Both
 git clone https://github.com/solomonneas/reelgrep
 cd reelgrep
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev,face,vision]"
+.venv/bin/pip install -e ".[dev,face,vision,whisper]"
 .venv/bin/pytest
 .venv/bin/ruff check .
 ```
@@ -214,13 +241,15 @@ Tests marked `integration` shell out to the real `ffmpeg`, `ffprobe`, and `insig
 
 ## Roadmap
 
-Not in v0.1.0, queued for later releases:
+Queued for later releases:
 
-- Whisper transcription for videos without subtitles.
-- Web UI for browsing the index.
+- Web UI for browsing the index, captured frames, and exports.
 - TypeScript MCP wrapper for agentic use.
+- WhisperX-style alignment of existing prose transcripts (PDF / TXT) to audio without re-transcribing.
 - Writing thumbnails and chapters back to Jellyfin.
 - Cross-video person clustering ("find all distinct faces in this whole library").
+
+Shipped in v0.2.0: local Whisper transcription via the `[whisper]` extra and the new `reelgrep transcribe` command. See [Transcribe a video without subtitles](#transcribe-a-video-without-subtitles).
 
 ## License
 
