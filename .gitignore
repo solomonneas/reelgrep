@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Virtualenv / env
+.venv/
+.env
+
+# Claude / superpowers artifacts (per repo-hygiene rule)
+.claude/
+
+# Local databases
+*.sqlite
+*.db
+
+# Test video fixtures (binary, not committed)
+tests/fixtures/*.mp4
+tests/fixtures/*.mkv
+tests/fixtures/*.webm

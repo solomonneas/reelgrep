@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reelgrep"
+version = "0.1.0"
+description = "Local video search and media analysis: ffprobe metadata, frame sampling, contact sheets, subtitle search, clip export, and pluggable person/object detection."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Solomon Neas", email = "srneas@gmail.com" }]
+requires-python = ">=3.11"
+keywords = ["video", "ffmpeg", "ffprobe", "search", "subtitles", "cli"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "click>=8.1",
+    "pydantic>=2.5",
+    "pillow>=10.0",
+    "pysrt>=1.1",
+    "webvtt-py>=0.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+]
+face = [
+    "insightface>=0.7",
+    "onnxruntime>=1.16",
+    "numpy>=1.24",
+]
+vision = [
+    "httpx>=0.27",
+]
+
+[project.scripts]
+reelgrep = "reelgrep.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/solomonneas/reelgrep"
+Repository = "https://github.com/solomonneas/reelgrep"
+Issues = "https://github.com/solomonneas/reelgrep/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reelgrep"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
