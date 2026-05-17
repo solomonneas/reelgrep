@@ -32,7 +32,7 @@ def test_help_lists_all_commands():
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
     for name in ("ingest", "export-clip", "make-gif", "search-subtitles",
-                 "contact-sheet", "info", "ls"):
+                 "contact-sheet", "info", "ls", "jellyfin"):
         assert name in result.output
 
 
