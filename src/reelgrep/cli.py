@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from reelgrep import __version__
+from reelgrep.commands.align import align_cmd as align
 from reelgrep.commands.contact_sheet import contact_sheet
 from reelgrep.commands.export_clip import export_clip
 from reelgrep.commands.find_person import find_person
@@ -30,7 +31,7 @@ def main(db_override: str | None, quiet: bool | None) -> None:
         set_db_override(db_override)
 
 
-for cmd in (ingest, export_clip, make_gif, search_subtitles, contact_sheet,
+for cmd in (align, ingest, export_clip, make_gif, search_subtitles, contact_sheet,
             find_person, serve, transcribe, info, ls, jellyfin):
     main.add_command(cmd)
 
