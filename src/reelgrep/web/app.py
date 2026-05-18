@@ -280,6 +280,92 @@ def create_app(db_path: Path | None = None):
         finally:
             conn.close()
 
+    async def faces_clusters(request: Request) -> JSONResponse:
+        from reelgrep.faces import Faces
+
+        labeled_only = (
+            request.query_params.get("labeled_only", "false").lower() == "true"
+        )
+        limit_raw = request.query_params.get("limit")
+        limit_val: int | None = None
+        if limit_raw is not None:
+            try:
+                limit_val = int(limit_raw)
+            except ValueError as exc:
+                raise HTTPException(400, "limit must be an integer") from exc
+
+        faces = Faces(db_path=resolved_db_path)
+        clusters = faces.list_clusters(labeled_only=labeled_only, limit=limit_val)
+        return JSONResponse(
+            {
+                "clusters": [
+                    {
+                        "id": c.id,
+                        "label": c.label,
+                        "size": c.size,
+                        "rep_detection_id": c.rep_detection_id,
+                        "computed_at": c.computed_at,
+                    }
+                    for c in clusters
+                ],
+            }
+        )
+
+    async def faces_cluster_detail(request: Request) -> JSONResponse:
+        from reelgrep.faces import Faces, FacesError
+
+        cluster_id = int(request.path_params["cluster_id"])
+        faces = Faces(db_path=resolved_db_path)
+        try:
+            cluster = faces.get_cluster(cluster_id)
+        except FacesError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        members = faces.cluster_members(cluster_id)
+        return JSONResponse(
+            {
+                "cluster": {
+                    "id": cluster.id,
+                    "label": cluster.label,
+                    "size": cluster.size,
+                    "rep_detection_id": cluster.rep_detection_id,
+                    "computed_at": cluster.computed_at,
+                },
+                "members": [
+                    {
+                        "id": m.id,
+                        "video_id": m.video_id,
+                        "video_path": m.video_path,
+                        "frame_id": m.frame_id,
+                        "frame_path": m.frame_path,
+                        "timestamp_ms": m.timestamp_ms,
+                        "bbox": list(m.bbox),
+                    }
+                    for m in members
+                ],
+            }
+        )
+
+    async def faces_cluster_label(request: Request) -> JSONResponse:
+        from reelgrep.faces import Faces, FacesError
+
+        cluster_id = int(request.path_params["cluster_id"])
+        try:
+            body = await request.json()
+        except ValueError as exc:
+            raise HTTPException(400, "body must be JSON") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be a JSON object")
+        label = body.get("label")
+        faces = Faces(db_path=resolved_db_path)
+        try:
+            faces.label_cluster(cluster_id, label if label else None)
+        except FacesError as exc:
+            msg = str(exc)
+            if msg.startswith("no cluster"):
+                raise HTTPException(404, msg) from exc
+            raise HTTPException(400, msg) from exc
+        return JSONResponse({"ok": True})
+
     async def serve_file(request: Request) -> Response:
         raw = request.query_params.get("path", "")
         if not raw:
@@ -312,7 +398,7 @@ def create_app(db_path: Path | None = None):
         Middleware(
             CORSMiddleware,
             allow_origins=["http://127.0.0.1", "http://localhost"],
-            allow_methods=["GET"],
+            allow_methods=["GET", "PATCH"],
         ),
     ]
 
@@ -325,6 +411,17 @@ def create_app(db_path: Path | None = None):
         Route("/api/searches", list_searches),
         Route("/api/searches/{search_id:int}", get_search),
         Route("/api/exports", list_exports),
+        Route("/api/faces/clusters", faces_clusters, methods=["GET"]),
+        Route(
+            "/api/faces/clusters/{cluster_id:int}",
+            faces_cluster_detail,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/faces/clusters/{cluster_id:int}",
+            faces_cluster_label,
+            methods=["PATCH"],
+        ),
         Route("/file", serve_file),
     ]
 
