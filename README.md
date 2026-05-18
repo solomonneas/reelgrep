@@ -227,6 +227,23 @@ Two backends ship in v0.1.0, both pluggable, both opt-in via extras:
 
 Switch engines with `--backend ollama_vision` on the `find-person` command. Both engines accept the same `--positive` / `--negative` / `--threshold` / `--top-k` flags.
 
+## Using reelgrep as a library
+
+Beyond the CLI, reelgrep ships a small Python library surface for
+downstream packages that want to drive ingest, search, and
+transcription programmatically, or to plug in a custom content
+source (S3, an internal HTTP archive, etc.) or a custom person
+model.
+
+```bash
+pip install reelgrep
+```
+
+See [docs/extending.md](docs/extending.md) for the consumer-facing
+guide: installation, quickstart, `BaseBackend` and `BasePersonModel`
+worked examples, the `tags` table extension surface, and the
+current stability contract.
+
 ## Storage and privacy
 
 - The index database lives at `~/.local/share/reelgrep/index.sqlite` by default. Override with `REELGREP_HOME` or `REELGREP_DB`.
