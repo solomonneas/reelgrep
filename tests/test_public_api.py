@@ -193,3 +193,14 @@ def test_faces_public_surface() -> None:
     assert not missing_from_all, f"missing from __all__: {missing_from_all}"
     for name in expected:
         assert hasattr(reelgrep, name), f"missing attribute on top-level package: {name}"
+
+
+def test_top_level_import_does_not_require_face_extra():
+    """Importing reelgrep + accessing the faces surface must NOT require the [face] extra."""
+    import reelgrep
+    # These attributes exist whether or not insightface/hdbscan is installed.
+    assert hasattr(reelgrep, "extract_faces")
+    assert hasattr(reelgrep, "cluster_faces")
+    assert hasattr(reelgrep, "Faces")
+    # numpy must be importable as a base dep.
+    import numpy  # noqa: F401
