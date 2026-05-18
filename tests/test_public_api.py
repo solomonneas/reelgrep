@@ -35,6 +35,16 @@ EXPECTED_PUBLIC_NAMES = {
     "register_person_model",
     "get_person_model",
     "list_person_models",
+    # Faces
+    "extract_faces",
+    "cluster_faces",
+    "Faces",
+    "FaceDetection",
+    "FaceCluster",
+    "ClusterReport",
+    "ExtractFacesResult",
+    "FacesError",
+    "InsightFaceMissingError",
     # Metadata
     "__version__",
 }
@@ -162,3 +172,24 @@ def test_end_to_end_via_top_level_only() -> None:
         import reelgrep.backends as _backends
 
         _backends._REGISTRY.pop(name, None)
+
+
+def test_faces_public_surface() -> None:
+    """The faces library surface is importable from top-level reelgrep."""
+    import reelgrep
+
+    expected = {
+        "ClusterReport",
+        "ExtractFacesResult",
+        "FaceCluster",
+        "FaceDetection",
+        "Faces",
+        "FacesError",
+        "InsightFaceMissingError",
+        "cluster_faces",
+        "extract_faces",
+    }
+    missing_from_all = expected - set(reelgrep.__all__)
+    assert not missing_from_all, f"missing from __all__: {missing_from_all}"
+    for name in expected:
+        assert hasattr(reelgrep, name), f"missing attribute on top-level package: {name}"
