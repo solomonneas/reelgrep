@@ -427,6 +427,68 @@ The `tags` table is a fallback. Prefer the backend and person-model
 registries when your extension fits those shapes; reach for `tags`
 only when it doesn't.
 
+## Faces and clustering
+
+reelgrep ships a face detection + clustering pipeline that programmatic
+consumers can drive directly. The relevant entry points are
+``extract_faces`` (detect + embed across a video), ``cluster_faces``
+(group the detection pool), and ``Faces`` (the read-and-update API
+over the resulting tables).
+
+```python
+from reelgrep import extract_faces, cluster_faces, Faces
+
+extract_faces("/path/to/video.mp4")            # detect + embed
+cluster_faces(min_cluster_size=5)               # cluster the whole pool
+
+faces = Faces()
+for c in faces.list_clusters(limit=10):
+    print(c.id, c.label, c.size)
+
+# Auto-extend: label a cluster once, query it everywhere.
+faces.label_cluster(cluster_id=1, label="Speaker A")
+for det in faces.find_by_label("Speaker A"):
+    print(det.video_path, det.timestamp_ms, det.bbox)
+```
+
+``cluster_faces`` is destructive on the cluster tables (it wipes
+``face_clusters`` and ``face_cluster_members``) but never on
+``face_detections``. Labels are preserved across re-clusters when a
+new cluster's centroid is within ``label_carry_threshold`` (default
+``0.4`` cosine distance) of the previous labeled cluster's centroid;
+labels that fall outside that band are reported in the
+``ClusterReport.labels_orphaned`` list and the user can re-attach
+them via ``Faces.label_cluster``.
+
+### Embedding storage format
+
+Each row in ``face_detections`` stores a 512-dim float32 numpy array
+as a little-endian raw byte blob in the ``embedding`` column. To read
+embeddings directly without going through reelgrep:
+
+```python
+import numpy as np
+import sqlite3
+
+conn = sqlite3.connect("~/.local/share/reelgrep/index.sqlite")
+for row in conn.execute("SELECT embedding FROM face_detections LIMIT 5"):
+    emb = np.frombuffer(row[0], dtype=np.float32)
+    assert emb.shape == (512,)
+```
+
+The ``embedding_model`` column documents which insightface model pack
+produced the embedding (``insightface_buffalo_l`` by default). Future
+versions may persist multiple model outputs side by side.
+
+### Privacy
+
+Face detection is opt-in and runs only when the user invokes
+``extract_faces`` (or the corresponding CLI) explicitly. The CLI
+ships ``reelgrep faces purge <video> --yes`` for per-video deletes
+and ``reelgrep faces purge --all --yes`` to wipe the face tables
+entirely. Downstream packages embedding reelgrep should expose
+equivalent controls in their own UIs.
+
 ## What reelgrep does NOT do (and what you may need to add yourself)
 
 reelgrep is intentionally narrow. The following are out of scope at
@@ -452,17 +514,17 @@ the existing surface when you need them.
 
 ## Versioning and stability
 
-reelgrep is currently at `0.4.x`. The library surface is settling
+reelgrep is currently at `0.5.x`. The library surface is settling
 but is not yet API-stable: minor versions in the `0.y` series may
 introduce breaking changes. Once a `1.0` release ships, reelgrep
 will follow [semver](https://semver.org/).
 
-For forward-compatibility within the `0.4` line, pin with
-`reelgrep~=0.4.0`:
+For forward-compatibility within the `0.5` line, pin with
+`reelgrep~=0.5.0`:
 
 ```toml
 [project]
-dependencies = ["reelgrep~=0.4.0"]
+dependencies = ["reelgrep~=0.5.0"]
 ```
 
 The definitive list of public names is `reelgrep.__all__`. Anything
