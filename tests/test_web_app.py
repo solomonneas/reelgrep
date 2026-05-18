@@ -390,3 +390,211 @@ def test_file_serves_manifest_path(client, seeded_db):
     r = client.get("/file", params={"path": manifest_path})
     assert r.status_code == 200
     assert r.content == b"{}"
+
+
+# ---------------------------------------------------------------------------
+# Faces clusters
+# ---------------------------------------------------------------------------
+
+
+def _seed_face_clusters(db_path):
+    """Insert face_detections + face_clusters + members into the seeded DB.
+
+    Returns the cluster id of the labeled cluster.
+    """
+    import numpy as np
+
+    from reelgrep.db import connect, migrate
+
+    conn = connect(db_path)
+    migrate(conn)
+    try:
+        # Grab the three frames that the base fixture already created on
+        # video blake2b:aaa.
+        frame_rows = conn.execute(
+            "SELECT id FROM frames "
+            "WHERE video_id = (SELECT id FROM videos WHERE file_hash='blake2b:aaa') "
+            "ORDER BY timestamp_ms ASC"
+        ).fetchall()
+        frame_ids = [r[0] for r in frame_rows]
+        assert len(frame_ids) >= 3, "expected seeded fixture to provide 3 frames"
+
+        # Insert three face_detections, one per frame, all with a known
+        # embedding so the cluster representative is real.
+        emb = np.zeros(512, dtype=np.float32)
+        emb[0] = 1.0
+        emb_blob = emb.tobytes()
+        det_ids: list[int] = []
+        for i, fid in enumerate(frame_ids):
+            cur = conn.execute(
+                "INSERT INTO face_detections(frame_id, bbox_x, bbox_y, bbox_w, bbox_h, "
+                "embedding, embedding_model, detected_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    fid,
+                    10 + i,
+                    20 + i,
+                    40,
+                    60,
+                    emb_blob,
+                    "insightface_buffalo_l",
+                    "2026-05-18T00:00:00",
+                ),
+            )
+            det_ids.append(cur.lastrowid)
+
+        cur = conn.execute(
+            "INSERT INTO face_clusters(label, rep_detection_id, size, computed_at) "
+            "VALUES (?,?,?,?)",
+            ("Alice", det_ids[0], len(det_ids), "2026-05-18T00:01:00"),
+        )
+        cluster_id = cur.lastrowid
+        for i, det_id in enumerate(det_ids):
+            conn.execute(
+                "INSERT INTO face_cluster_members(cluster_id, detection_id, distance) "
+                "VALUES (?,?,?)",
+                (cluster_id, det_id, float(i) * 0.01),
+            )
+        conn.commit()
+        return cluster_id
+    finally:
+        conn.close()
+
+
+def test_faces_clusters_endpoint(client, seeded_db):
+    """GET /api/faces/clusters returns ranked clusters."""
+    db_path, _, _ = seeded_db
+    cluster_id = _seed_face_clusters(db_path)
+
+    r = client.get("/api/faces/clusters")
+    assert r.status_code == 200
+    body = r.json()
+    assert "clusters" in body
+    assert len(body["clusters"]) >= 1
+    sample = next(c for c in body["clusters"] if c["id"] == cluster_id)
+    assert {"id", "label", "size", "rep_detection_id", "computed_at"} <= set(
+        sample.keys()
+    )
+    assert sample["label"] == "Alice"
+    assert sample["size"] == 3
+
+
+def test_faces_clusters_labeled_only_filter(client, seeded_db):
+    """labeled_only=true filters out unlabeled clusters."""
+    db_path, _, _ = seeded_db
+    _seed_face_clusters(db_path)
+    # Insert one extra unlabeled cluster.
+    from reelgrep.db import connect, migrate
+
+    conn = connect(db_path)
+    migrate(conn)
+    try:
+        conn.execute(
+            "INSERT INTO face_clusters(label, size, computed_at) VALUES (?,?,?)",
+            (None, 0, "2026-05-18T00:02:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r_all = client.get("/api/faces/clusters")
+    r_labeled = client.get("/api/faces/clusters?labeled_only=true")
+    assert r_all.status_code == 200
+    assert r_labeled.status_code == 200
+    assert len(r_labeled.json()["clusters"]) < len(r_all.json()["clusters"])
+    assert all(c["label"] is not None for c in r_labeled.json()["clusters"])
+
+
+def test_faces_cluster_detail_endpoint(client, seeded_db):
+    """GET /api/faces/clusters/{id} returns cluster + members."""
+    db_path, _, _ = seeded_db
+    cluster_id = _seed_face_clusters(db_path)
+
+    r = client.get(f"/api/faces/clusters/{cluster_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert "cluster" in body and "members" in body
+    assert body["cluster"]["id"] == cluster_id
+    assert body["cluster"]["label"] == "Alice"
+    assert len(body["members"]) == 3
+    m = body["members"][0]
+    assert {
+        "id",
+        "video_id",
+        "video_path",
+        "frame_id",
+        "frame_path",
+        "timestamp_ms",
+        "bbox",
+    } <= set(m.keys())
+    assert m["bbox"] == [10, 20, 40, 60]
+    assert m["video_path"] == "/v/lecture.mp4"
+
+
+def test_faces_cluster_detail_404_when_missing(client, seeded_db):
+    """GET /api/faces/clusters/{id} returns 404 for nonexistent cluster."""
+    db_path, _, _ = seeded_db
+    _seed_face_clusters(db_path)
+    r = client.get("/api/faces/clusters/99999")
+    assert r.status_code == 404
+
+
+def test_faces_cluster_label_patch_endpoint(client, seeded_db):
+    """PATCH /api/faces/clusters/{id} updates the label."""
+    db_path, _, _ = seeded_db
+    cluster_id = _seed_face_clusters(db_path)
+
+    r = client.patch(
+        f"/api/faces/clusters/{cluster_id}",
+        json={"label": "Speaker A"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    listing = client.get("/api/faces/clusters").json()["clusters"]
+    by_id = next(c for c in listing if c["id"] == cluster_id)
+    assert by_id["label"] == "Speaker A"
+
+
+def test_faces_cluster_label_patch_clears_when_null(client, seeded_db):
+    """PATCH with label=None clears the label."""
+    db_path, _, _ = seeded_db
+    cluster_id = _seed_face_clusters(db_path)
+
+    r = client.patch(f"/api/faces/clusters/{cluster_id}", json={"label": None})
+    assert r.status_code == 200
+    listing = client.get("/api/faces/clusters").json()["clusters"]
+    by_id = next(c for c in listing if c["id"] == cluster_id)
+    assert by_id["label"] is None
+
+
+def test_faces_cluster_label_patch_404_when_missing(client, seeded_db):
+    """PATCH on missing cluster returns 404."""
+    db_path, _, _ = seeded_db
+    _seed_face_clusters(db_path)
+    r = client.patch("/api/faces/clusters/99999", json={"label": "x"})
+    assert r.status_code == 404
+
+
+def test_faces_cluster_label_patch_409_on_collision(client, seeded_db):
+    """PATCH with a label already on another cluster returns 400."""
+    db_path, _, _ = seeded_db
+    cluster_id = _seed_face_clusters(db_path)
+    # Insert a second cluster with label "Bob".
+    from reelgrep.db import connect, migrate
+
+    conn = connect(db_path)
+    migrate(conn)
+    try:
+        conn.execute(
+            "INSERT INTO face_clusters(label, size, computed_at) VALUES (?,?,?)",
+            ("Bob", 0, "2026-05-18T00:02:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Try to relabel the Alice cluster as Bob — should collide.
+    r = client.patch(
+        f"/api/faces/clusters/{cluster_id}", json={"label": "Bob"}
+    )
+    assert r.status_code == 400
