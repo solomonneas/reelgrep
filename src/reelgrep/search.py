@@ -10,13 +10,29 @@ framework concerns.
 from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 from reelgrep.config import get_settings
 from reelgrep.db import connect, migrate
 
-__all__ = ["DetectionHit", "FrameRow", "Search", "SubtitleHit"]
+__all__ = [
+    "DetectionHit",
+    "FrameRow",
+    "InvalidQueryError",
+    "Search",
+    "SearchError",
+    "SubtitleHit",
+]
+
+
+class SearchError(Exception):
+    """Base class for reelgrep.search errors."""
+
+
+class InvalidQueryError(SearchError):
+    """Raised when a search query is malformed (e.g. unterminated FTS string)."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +80,18 @@ class Search:
     call. ``Search`` never mutates rows and never alters the
     process-level db_path override; passing ``db_path`` to the
     constructor only affects connections made by this instance.
+
+    db_path contract
+    ----------------
+    - When ``db_path`` is explicitly provided, the file must already
+      exist; otherwise :class:`FileNotFoundError` is raised. This
+      protects library consumers from typos that would otherwise
+      silently create an empty database and return empty results
+      forever.
+    - When ``db_path`` is ``None`` (the default), the path resolved
+      by :func:`reelgrep.config.get_settings` is used and is created
+      on first use if absent. CLI bootstrap (first ``reelgrep ingest``)
+      depends on this behaviour.
     """
 
     def __init__(self, *, db_path: str | os.PathLike[str] | None = None) -> None:
@@ -75,12 +103,21 @@ class Search:
             Path to the index SQLite file. When ``None``, the path
             resolved by :func:`reelgrep.config.get_settings` is used
             (which honours ``REELGREP_DB`` / ``REELGREP_HOME`` and any
-            active process override).
+            active process override) and is auto-created on first use
+            if absent. When explicitly provided, the file MUST already
+            exist; passing a path that does not exist raises
+            :class:`FileNotFoundError` rather than silently creating
+            an empty database.
         """
         if db_path is None:
             self._db_path: Path = get_settings().db_path
         else:
-            self._db_path = Path(db_path).expanduser().resolve()
+            path = Path(db_path).expanduser().resolve()
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"reelgrep index not found at {path}"
+                )
+            self._db_path = path
 
     @property
     def db_path(self) -> Path:
@@ -91,7 +128,7 @@ class Search:
         self,
         query: str,
         *,
-        limit: int = 50,
+        limit: int | None = 50,
         video_id: int | None = None,
     ) -> list[SubtitleHit]:
         """Run an FTS5 search across the subtitles table.
@@ -101,33 +138,44 @@ class Search:
         query:
             FTS5 ``MATCH`` expression (e.g. ``"hello"``, ``"pod*"``,
             ``"kubernetes networking"``). Tokenisation follows the
-            schema's ``porter unicode61`` configuration.
+            schema's ``porter unicode61`` configuration. A malformed
+            expression (e.g. an unterminated quoted string) raises
+            :class:`InvalidQueryError`.
         limit:
-            Maximum number of rows to return.
+            Maximum number of rows to return. ``None`` means no limit
+            (unbounded). Defaults to ``50``.
         video_id:
             Restrict the search to a single video's cues when given.
+            Returns an empty list when the video has no matching rows
+            OR when the video_id does not exist; use a separate
+            existence check if you need to distinguish those cases.
         """
-        if limit < 1:
+        if limit is not None and limit < 1:
             return []
+        limit_clause = "" if limit is None else "LIMIT ?"
         conn = connect(self._db_path)
         try:
             migrate(conn)
             if video_id is None:
-                cursor = conn.execute(
-                    """
+                params: tuple[object, ...] = (
+                    (query,) if limit is None else (query, limit)
+                )
+                sql = f"""
                     SELECT s.id, s.video_id, s.start_ms, s.end_ms,
                            s.text, s.language, s.source
                     FROM subtitles_fts
                     JOIN subtitles AS s ON s.id = subtitles_fts.rowid
                     WHERE subtitles_fts MATCH ?
                     ORDER BY s.video_id, s.start_ms
-                    LIMIT ?
-                    """,
-                    (query, limit),
-                )
-            else:
-                cursor = conn.execute(
+                    {limit_clause}
                     """
+            else:
+                params = (
+                    (query, video_id)
+                    if limit is None
+                    else (query, video_id, limit)
+                )
+                sql = f"""
                     SELECT s.id, s.video_id, s.start_ms, s.end_ms,
                            s.text, s.language, s.source
                     FROM subtitles_fts
@@ -135,10 +183,13 @@ class Search:
                     WHERE subtitles_fts MATCH ?
                       AND s.video_id = ?
                     ORDER BY s.start_ms
-                    LIMIT ?
-                    """,
-                    (query, video_id, limit),
-                )
+                    {limit_clause}
+                    """
+            try:
+                cursor = conn.execute(sql, params)
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError as e:
+                raise InvalidQueryError(str(e)) from e
             return [
                 SubtitleHit(
                     id=int(row["id"]),
@@ -149,7 +200,7 @@ class Search:
                     language=row["language"],
                     source=row["source"],
                 )
-                for row in cursor.fetchall()
+                for row in rows
             ]
         finally:
             conn.close()
@@ -159,7 +210,7 @@ class Search:
         *,
         model: str | None = None,
         label: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
         video_id: int | None = None,
     ) -> list[DetectionHit]:
         """Return recorded person-detection searches, optionally filtered.
@@ -174,10 +225,14 @@ class Search:
             Caller-provided name assigned to the search.
         video_id:
             Restrict to searches recorded against a single video.
+            Returns an empty list when the video has no matching rows
+            OR when the video_id does not exist; use a separate
+            existence check if you need to distinguish those cases.
         limit:
-            Maximum number of rows to return.
+            Maximum number of rows to return. ``None`` means no limit
+            (unbounded). Defaults to ``50``.
         """
-        if limit < 1:
+        if limit is not None and limit < 1:
             return []
         clauses: list[str] = []
         params: list[object] = []
@@ -191,7 +246,10 @@ class Search:
             clauses.append("ps.video_id = ?")
             params.append(video_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(limit)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(limit)
 
         conn = connect(self._db_path)
         try:
@@ -206,7 +264,7 @@ class Search:
                 JOIN videos v ON v.id = ps.video_id
                 {where}
                 ORDER BY ps.created_at DESC
-                LIMIT ?
+                {limit_clause}
                 """,
                 params,
             )
@@ -232,9 +290,13 @@ class Search:
         video_id: int,
         ts_start_ms: int | None = None,
         ts_end_ms: int | None = None,
-        limit: int = 200,
+        limit: int | None = 200,
     ) -> list[FrameRow]:
         """Return frames for ``video_id``, optionally within a timestamp window.
+
+        Returns an empty list when the video has no matching frames OR
+        when the video_id does not exist; use a separate existence
+        check if you need to distinguish those cases.
 
         Parameters
         ----------
@@ -247,9 +309,10 @@ class Search:
             Upper bound (inclusive) on ``timestamp_ms``. ``None`` means
             no upper bound.
         limit:
-            Maximum number of frames to return.
+            Maximum number of frames to return. ``None`` means no
+            limit (unbounded). Defaults to ``200``.
         """
-        if limit < 1:
+        if limit is not None and limit < 1:
             return []
         clauses = ["video_id = ?"]
         params: list[object] = [video_id]
@@ -259,7 +322,10 @@ class Search:
         if ts_end_ms is not None:
             clauses.append("timestamp_ms <= ?")
             params.append(ts_end_ms)
-        params.append(limit)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(limit)
 
         conn = connect(self._db_path)
         try:
@@ -270,7 +336,7 @@ class Search:
                 FROM frames
                 WHERE {' AND '.join(clauses)}
                 ORDER BY timestamp_ms ASC
-                LIMIT ?
+                {limit_clause}
                 """,
                 params,
             )

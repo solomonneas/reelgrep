@@ -368,3 +368,135 @@ def test_explicit_db_path_does_not_leak(
     assert s_default.db_path == settings_db_path
     # And the process-level override remains untouched.
     assert config.get_db_override() is None
+
+
+# Issue 2: InvalidQueryError --------------------------------------------------
+
+
+def test_subtitles_malformed_query_raises_invalid_query_error(tmp_path: Path) -> None:
+    """An unterminated FTS string surfaces as InvalidQueryError, not sqlite3.OperationalError."""
+    import sqlite3
+
+    from reelgrep.search import InvalidQueryError, SearchError
+
+    db_path = tmp_path / "idx.sqlite"
+    _seed(db_path)
+
+    s = Search(db_path=db_path)
+    with pytest.raises(InvalidQueryError) as exc_info:
+        s.subtitles('"unterminated')
+
+    # InvalidQueryError is a SearchError.
+    assert isinstance(exc_info.value, SearchError)
+    # The original sqlite3.OperationalError is preserved as the cause.
+    assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+
+
+# Issue 3: explicit db_path must exist ---------------------------------------
+
+
+def test_explicit_db_path_must_exist(tmp_path: Path) -> None:
+    """Constructing Search with a typo'd db_path raises FileNotFoundError."""
+    missing = tmp_path / "does-not-exist.sqlite"
+    assert not missing.exists()
+    with pytest.raises(FileNotFoundError):
+        Search(db_path=missing)
+
+
+def test_default_db_path_auto_creates(tmp_path: Path) -> None:
+    """``Search()`` with no db_path arg still works on a fresh settings-resolved path."""
+    # The autouse fixture sets REELGREP_HOME to a fresh tmp_path, so the
+    # settings-default db file should not yet exist.
+    settings = config.get_settings()
+    assert not settings.db_path.exists()
+
+    # Construction must succeed without raising.
+    s = Search()
+    # Issuing a query against a non-existent default path must transparently
+    # bootstrap the schema (CLI bootstrap behaviour).
+    assert s.detections() == []
+    assert settings.db_path.exists()
+
+
+# Issue 5: limit=None means unbounded ----------------------------------------
+
+
+def test_frames_at_limit_none_returns_all_rows(tmp_path: Path) -> None:
+    """``limit=None`` returns every frame, even past the default ``limit=200``."""
+    db_path = tmp_path / "idx.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = db.connect(db_path)
+    db.migrate(conn)
+    conn.execute(
+        "INSERT INTO videos (file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("blake2b:ccc", "/v/big.mp4", 600000, "2026-05-17T12:00:00", "{}"),
+    )
+    video_id = int(
+        conn.execute(
+            "SELECT id FROM videos WHERE file_hash='blake2b:ccc'"
+        ).fetchone()[0]
+    )
+    # Seed 250 frames -- comfortably above the default ``limit=200``.
+    total = 250
+    for i in range(total):
+        conn.execute(
+            "INSERT INTO frames (video_id, timestamp_ms, path, sampling_strategy) "
+            "VALUES (?, ?, ?, ?)",
+            (video_id, i * 1000, f"/cache/f{i}.jpg", "every_n"),
+        )
+    conn.commit()
+    conn.close()
+
+    s = Search(db_path=db_path)
+    # Default limit caps at 200.
+    assert len(s.frames_at(video_id=video_id)) == 200
+    # ``limit=None`` returns all 250.
+    all_frames = s.frames_at(video_id=video_id, limit=None)
+    assert len(all_frames) == total
+    assert [f.timestamp_ms for f in all_frames] == [i * 1000 for i in range(total)]
+
+
+def test_detections_limit_none_returns_all_rows(tmp_path: Path) -> None:
+    """``limit=None`` returns every recorded detection search."""
+    db_path = tmp_path / "idx.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = db.connect(db_path)
+    db.migrate(conn)
+    conn.execute(
+        "INSERT INTO videos (file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("blake2b:ddd", "/v/many.mp4", 600000, "2026-05-17T13:00:00", "{}"),
+    )
+    video_id = int(
+        conn.execute(
+            "SELECT id FROM videos WHERE file_hash='blake2b:ddd'"
+        ).fetchone()[0]
+    )
+    # Seed 75 person_searches -- comfortably above the default ``limit=50``.
+    total = 75
+    for i in range(total):
+        conn.execute(
+            "INSERT INTO person_searches "
+            "(video_id, label, backend, positive_examples_json, "
+            "negative_examples_json, config_json, threshold, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                video_id,
+                f"name{i}",
+                "face_embed",
+                "[]",
+                "[]",
+                "{}",
+                0.3,
+                f"2026-05-17T14:{i:02d}:00",
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    s = Search(db_path=db_path)
+    # Default limit caps at 50.
+    assert len(s.detections()) == 50
+    # ``limit=None`` returns all 75.
+    assert len(s.detections(limit=None)) == total

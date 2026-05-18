@@ -188,10 +188,9 @@ def create_app(db_path: Path | None = None):
             conn.close()
 
     async def list_searches(request: Request) -> JSONResponse:
-        # The route previously ran an uncapped query. Use a large bound here
-        # so behaviour is identical for realistic indexes; route-level paging
-        # can refine this later.
-        hits = Search(db_path=resolved_db_path).detections(limit=10_000)
+        # The route returns all stored searches (unbounded). Route-level paging
+        # can refine this later if indexes grow large.
+        hits = Search(db_path=resolved_db_path).detections(limit=None)
         return JSONResponse(
             {
                 "searches": [

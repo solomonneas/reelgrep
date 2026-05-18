@@ -178,9 +178,9 @@ def find_person(
             duration_ms = row["duration_ms"]
 
         # All frames previously sampled for this video, ordered by timestamp.
-        # ``limit`` is set high enough that any realistic ingest fits.
+        # ``limit=None`` returns every frame for this video (unbounded).
         frame_rows = Search(db_path=settings.db_path).frames_at(
-            video_id=int(video_id), limit=1_000_000
+            video_id=int(video_id), limit=None
         )
 
         frames: list[Frame]
