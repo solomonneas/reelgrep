@@ -2,7 +2,7 @@
 
 > Local video search and media analysis. Find people, outfits, objects, scenes, spoken phrases, and useful clips inside your own video library.
 
-Status: v0.4.0. Align command shipped: when a clean official transcript exists (PDF / TXT / MD) you can map it onto the Whisper timestamps to get accurate timing PLUS the institution's exact text. Web UI, transcription, and the TypeScript MCP wrapper (separate repo) all still work as before.
+Status: v0.5.0. Cross-video face clustering shipped: detect every face in every ingested video, cluster them with HDBSCAN, browse "who's in this library," label clusters, and find any labeled person across the index. Library API, prose-transcript alignment, local Whisper transcription, and the local browser UI all continue to work as before.
 
 reelgrep indexes video files on disk: it runs `ffprobe` for metadata, samples frames at a configurable interval, builds contact sheets, extracts embedded and sidecar subtitles into a SQLite FTS5 table you can grep, and exports clips, screenshots, and animated WebP loops with a JSON manifest sidecar for each output. Person and object detection is pluggable, with a face-embedding backend and an Ollama vision-LLM backend; both accept confirmed positive AND negative reference images so lookalikes do not slip through. Everything runs on your machine - frames, clips, manifests, and the index all stay on disk under your home directory by default, and nothing leaves the box without you configuring it to.
 
@@ -203,6 +203,56 @@ reelgrep make-gif ~/Videos/some-talk.mp4 --start 0:10:00 --duration 5 --out high
 
 The output is animated WebP, not GIF - smaller files, better quality, supported in modern browsers and chat clients. Defaults: 12 fps, 480px wide. Tune with `--fps` and `--width`.
 
+### Cluster faces across the library
+
+Once `reelgrep[face]` is installed, you can detect every face across every ingested video, cluster them, and browse the result. Discovery and auto-extend share the same underlying detection pool.
+
+```bash
+# 1. Detect faces across every ingested video (idempotent per video):
+reelgrep extract-faces --all
+
+# 2. Compute clusters:
+reelgrep faces cluster
+
+# 3. Browse clusters ranked by size:
+reelgrep faces list
+```
+
+Output:
+
+```text
+cluster    size   label
+#1         42     -
+#2         31     -
+#3         19     -
+```
+
+Label one cluster once, then find that person everywhere in the library:
+
+```bash
+reelgrep faces label 1 "Speaker A"
+reelgrep faces find "Speaker A"
+```
+
+Output:
+
+```text
+matches: 42
+    14.500s  /home/you/Videos/lecture-01.mp4  bbox=(120, 80, 220, 280)
+    42.200s  /home/you/Videos/lecture-01.mp4  bbox=(118, 82, 222, 282)
+   ...
+```
+
+Or fold detection into ingest itself so every new video joins the clustering pool automatically:
+
+```bash
+reelgrep ingest ~/Videos/lecture-02.mp4 --detect-faces
+```
+
+The local browser UI (`reelgrep serve`) gains a Faces tab: a grid of clusters ranked by size, click-through to member detections (each opens the source video at its timestamp), and an inline label editor.
+
+Face embeddings are durable biometric data; see "Storage and privacy" below for purge controls.
+
 ## Backends
 
 reelgrep separates "where is the video file?" from "what do I want to do with it?" via a small backend layer:
@@ -250,6 +300,7 @@ current stability contract.
 - Sampled frames cache to `~/.local/share/reelgrep/cache/frames/<hash>/` and subtitles to `~/.local/share/reelgrep/cache/subtitles/<hash>/`.
 - Every export (clip, gif, screenshot, contact sheet) writes a JSON manifest sidecar next to it with the parameters and source hash so outputs are reproducible.
 - No telemetry. No background network calls. The Ollama backend talks to the Ollama URL you configure (default `http://127.0.0.1:11434`). The Jellyfin adapter talks only to the URL you set. Everything else stays local.
+- Face detection writes 512-dim float32 embeddings (~2KB per detected face) into the SQLite index in the `face_detections` table. Detection runs ONLY when you opt in via `reelgrep extract-faces`, `reelgrep ingest --detect-faces`, or the library API. Purge everything with `reelgrep faces purge --all` or per-video with `reelgrep faces purge <video> --yes`.
 - You are responsible for confirming you have the rights to analyze and store frames, clips, and derived data from the videos you process.
 
 ## Configuration reference
@@ -280,6 +331,8 @@ current stability contract.
 | `reelgrep transcribe <video> --model` | Whisper-transcribe and index cues for an un-captioned video. See [Transcribe a video without subtitles](#transcribe-a-video-without-subtitles). |
 | `reelgrep align <video> --transcript <file>` | Map a clean prose transcript onto Whisper timestamps. See [Align an official transcript onto Whisper timestamps](#align-an-official-transcript-onto-whisper-timestamps). |
 | `reelgrep find-person <video> --label --positive --out` | Locate frames containing a person. See [Find a specific person](#find-a-specific-person). |
+| `reelgrep extract-faces <video> [--all] [--force]` | Detect + embed faces across a video (or every video with `--all`). See [Cluster faces across the library](#cluster-faces-across-the-library). |
+| `reelgrep faces <list\|show\|label\|find\|cluster\|purge>` | Browse, label, and query face clusters across the library. See [Cluster faces across the library](#cluster-faces-across-the-library). |
 | `reelgrep serve [--port 8765]` | Open the local browser UI for the whole index. See [Browse the whole library](#browse-the-whole-library-in-a-local-web-ui). |
 | `reelgrep jellyfin resolve <query>` | Resolve a Jellyfin item to its local file path for piping. |
 | `reelgrep --db PATH <subcommand>` | One-shot override for the index database path. |
@@ -306,8 +359,9 @@ Tests marked `integration` shell out to the real `ffmpeg`, `ffprobe`, and `insig
 Queued for later releases:
 
 - Writing thumbnails and chapters back to Jellyfin.
-- Cross-video person clustering ("find all distinct faces in this whole library").
 - True wav2vec2 word-level alignment for cases where cue-level timing isn't tight enough.
+
+Shipped in v0.5.0: cross-video face clustering. New CLI (`reelgrep extract-faces`, `reelgrep faces`), ingest flag (`--detect-faces`), library API (`extract_faces`, `cluster_faces`, `Faces`), and a Faces tab in the local browser UI. See [Cluster faces across the library](#cluster-faces-across-the-library).
 
 Shipped in v0.4.0: prose-transcript alignment (`reelgrep align`) via the `[align]` extra, plus a public Python library API (`reelgrep.index.ingest_video`) for embedders. See [Align an official transcript onto Whisper timestamps](#align-an-official-transcript-onto-whisper-timestamps). The MCP wrapper for agentic use also shipped as its own repo at [solomonneas/reelgrep-mcp](https://github.com/solomonneas/reelgrep-mcp) (`npm install -g reelgrep-mcp`).
 
