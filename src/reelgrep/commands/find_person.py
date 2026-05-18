@@ -14,6 +14,7 @@ from reelgrep.config import ensure_dirs, get_settings
 from reelgrep.db import connect, migrate
 from reelgrep.frames import Frame, sample_every
 from reelgrep.hashing import file_hash
+from reelgrep.index import hash_slice
 from reelgrep.manifest import Manifest, Source, write
 from reelgrep.models import ModelError, get_person_model
 from reelgrep.probe import probe
@@ -22,11 +23,6 @@ __all__ = ["find_person"]
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 _DEFAULT_THRESHOLDS = {"face_embed": 0.30, "ollama_vision": 0.65}
-
-
-def _hash_slice(digest: str) -> str:
-    """Return the deterministic cache subdirectory name for a file hash."""
-    return digest[8:24] if digest.startswith("blake2b:") else digest[:16]
 
 
 def _expand_images(paths: tuple[Path, ...]) -> list[Path]:
@@ -199,7 +195,7 @@ def find_person(
             ]
             frame_ids = [int(r["id"]) for r in frame_rows]
         else:
-            frames_cache = settings.cache_dir / "frames" / _hash_slice(digest)
+            frames_cache = settings.cache_dir / "frames" / hash_slice(digest)
             frames_cache.mkdir(parents=True, exist_ok=True)
             sampled = sample_every(
                 resolved_video, frames_cache, interval_seconds=interval_seconds

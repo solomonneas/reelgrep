@@ -8,7 +8,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-__all__ = ["Settings", "get_settings", "reset_settings", "ensure_dirs", "set_db_override"]
+__all__ = [
+    "Settings",
+    "get_settings",
+    "reset_settings",
+    "ensure_dirs",
+    "set_db_override",
+    "get_db_override",
+]
 
 
 _DEFAULT_HOME = Path("~/.local/share/reelgrep").expanduser().resolve()
@@ -76,6 +83,11 @@ def set_db_override(path: Path | str | None) -> None:
     global _db_override
     _db_override = _expand(str(path)) if path is not None else None
     _cached_settings.cache_clear()
+
+
+def get_db_override() -> Path | None:
+    """Return the current process-level db_path override, or None when unset."""
+    return _db_override
 
 
 def ensure_dirs(settings: Settings | None = None) -> Settings:

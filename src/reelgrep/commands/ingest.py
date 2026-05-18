@@ -64,7 +64,8 @@ def ingest(
     )
 
     if result.already_ingested:
-        click.echo(f"Already ingested: {result.file_hash} ({result.video_path})")
+        displayed_path = result.previously_indexed_path or result.video_path
+        click.echo(f"Already ingested: {result.file_hash} ({displayed_path})")
         return
 
     click.echo(f"ingested: {result.video_path}")

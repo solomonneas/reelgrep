@@ -141,8 +141,16 @@ def test_ingest_video_explicit_db_path(
     patched_pipeline: dict[str, Any],
     tmp_path: Path,
 ) -> None:
-    """Passing db_path routes writes to that file via set_db_override."""
+    """Passing db_path routes writes to that file via set_db_override.
+
+    The override is also restored on return so subsequent calls without
+    db_path resolve through the normal settings chain (no sticky state).
+    """
     target_db = tmp_path / "explicit.sqlite"
+
+    # Capture the settings-resolved db path before any override.
+    reset_settings()
+    settings_db_path = get_settings().db_path
 
     result = ingest_video(fake_video, db_path=target_db)
 
@@ -156,17 +164,35 @@ def test_ingest_video_explicit_db_path(
         conn.close()
     assert vcount == 1
 
+    # A second call without db_path must NOT route to the previous override.
+    second_video = tmp_path / "movie2.mp4"
+    second_video.write_bytes(b"\x01different-bytes")
+    second = ingest_video(second_video)
+
+    assert second.db_path == settings_db_path
+    # And the explicit-target db must not have grown a second row.
+    conn = _open_db(target_db)
+    try:
+        (vcount2,) = conn.execute("SELECT COUNT(*) FROM videos").fetchone()
+    finally:
+        conn.close()
+    assert vcount2 == 1
+
 
 def test_ingest_video_second_call_is_idempotent(
     fake_video: Path, patched_pipeline: dict[str, Any]
 ) -> None:
     first = ingest_video(fake_video)
     assert first.already_ingested is False
+    assert first.previously_indexed_path is None
 
     second = ingest_video(fake_video)
     assert second.already_ingested is True
     assert second.file_hash == first.file_hash
     assert second.video_id == first.video_id
+    # Echoes the path stored on the prior ingest, even if the caller
+    # passed the same input path - this is the row's recorded path.
+    assert second.previously_indexed_path == first.video_path
 
     conn = _open_db(second.db_path)
     try:
