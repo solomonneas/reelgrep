@@ -451,3 +451,63 @@ def test_extract_embedded_ffmpeg_error_is_warned_not_fatal(
     assert vcount == 1
     assert fcount == 2
     assert scount == 0
+
+
+def test_detect_faces_flag_calls_extract_after_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_video: Path,
+    patched_pipeline: dict[str, Any],
+) -> None:
+    """--detect-faces invokes extract_faces after a successful ingest."""
+    from reelgrep.faces import ExtractFacesResult
+
+    calls: dict[str, int] = {"extract": 0}
+
+    def fake_extract(
+        video: Any,
+        *,
+        db_path: Any = None,
+        force: bool = False,
+        embedding_model: str = "insightface_buffalo_l",
+    ) -> ExtractFacesResult:
+        calls["extract"] += 1
+        return ExtractFacesResult(
+            video_path=str(video),
+            video_id=1,
+            frames_scanned=2,
+            detections_added=3,
+            embedding_model=embedding_model,
+        )
+
+    monkeypatch.setattr(
+        "reelgrep.commands.ingest.extract_faces", fake_extract, raising=False,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(ingest, [str(fake_video), "--detect-faces"])
+    assert result.exit_code == 0, result.output
+    assert calls["extract"] == 1
+    assert "face detections: 3" in result.output
+
+
+def test_detect_faces_warns_when_extra_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_video: Path,
+    patched_pipeline: dict[str, Any],
+) -> None:
+    """If insightface is not importable, --detect-faces logs a warning and exits 0."""
+    from reelgrep.faces import InsightFaceMissingError
+
+    def fake_extract(*_a: Any, **_k: Any) -> Any:
+        raise InsightFaceMissingError("insightface not installed")
+
+    monkeypatch.setattr(
+        "reelgrep.commands.ingest.extract_faces", fake_extract, raising=False,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(ingest, [str(fake_video), "--detect-faces"])
+    assert result.exit_code == 0, result.output
+    combined = result.output + result.stderr
+    assert "insightface" in combined.lower()
+    assert "face detections:" not in result.output

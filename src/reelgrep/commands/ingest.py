@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from reelgrep import timecode
+from reelgrep.faces import InsightFaceMissingError, extract_faces
 from reelgrep.index import hash_slice as _hash_slice  # noqa: F401 - re-export
 from reelgrep.index import ingest_video
 
@@ -37,6 +38,14 @@ __all__ = ["ingest"]
     show_default=True,
     help="Whisper model size when --transcribe is set.",
 )
+@click.option(
+    "--detect-faces",
+    "do_detect_faces",
+    is_flag=True,
+    default=False,
+    help="After ingest, detect + embed faces in every sampled frame "
+         "(requires the [face] extra).",
+)
 def ingest(
     video_path: Path,
     interval_seconds: float,
@@ -46,6 +55,7 @@ def ingest(
     force: bool,
     do_transcribe: bool,
     transcribe_model: str,
+    do_detect_faces: bool,
 ) -> None:
     """Ingest a video: probe, extract subtitles, sample frames, write to local index."""
     def _stderr(msg: str) -> None:
@@ -81,3 +91,10 @@ def ingest(
         )
     click.echo(f"frames sampled: {result.frame_count}")
     click.echo(f"db:       {result.db_path}")
+
+    if do_detect_faces:
+        try:
+            face_result = extract_faces(result.video_path)
+            click.echo(f"face detections: {face_result.detections_added}")
+        except InsightFaceMissingError as exc:
+            click.echo(f"warning: --detect-faces requested but {exc}", err=True)
