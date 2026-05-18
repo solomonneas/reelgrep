@@ -9,6 +9,7 @@ from reelgrep.commands.align import align_cmd as align
 from reelgrep.commands.contact_sheet import contact_sheet
 from reelgrep.commands.export_clip import export_clip
 from reelgrep.commands.extract_faces import extract_faces_command
+from reelgrep.commands.faces import faces_group
 from reelgrep.commands.find_person import find_person
 from reelgrep.commands.info import info
 from reelgrep.commands.ingest import ingest
@@ -32,8 +33,9 @@ def main(db_override: str | None, quiet: bool | None) -> None:
         set_db_override(db_override)
 
 
-for cmd in (align, ingest, export_clip, extract_faces_command, make_gif, search_subtitles,
-            contact_sheet, find_person, serve, transcribe, info, ls, jellyfin):
+for cmd in (align, ingest, export_clip, extract_faces_command, faces_group, make_gif,
+            search_subtitles, contact_sheet, find_person, serve, transcribe, info, ls,
+            jellyfin):
     main.add_command(cmd)
 
 
