@@ -83,16 +83,16 @@ def patched_pipeline(
     fake_frames = _make_frames(tmp_path)
 
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.probe",
+        "reelgrep.index.probe",
         lambda p: fake_meta.model_copy(update={"path": str(p)}),
     )
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.extract_embedded", lambda *a, **k: []
+        "reelgrep.index.extract_embedded", lambda *a, **k: []
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.find_sidecars", lambda p: [])
-    monkeypatch.setattr("reelgrep.commands.ingest.parse_sidecar", lambda p: track)
+    monkeypatch.setattr("reelgrep.index.find_sidecars", lambda p: [])
+    monkeypatch.setattr("reelgrep.index.parse_sidecar", lambda p: track)
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+        "reelgrep.index.sample_every", lambda *a, **k: fake_frames
     )
     return {"meta": fake_meta, "track": track, "frames": fake_frames}
 
@@ -137,18 +137,18 @@ def test_sidecar_present_indexes_cues_and_fts(
     sidecar.write_text("dummy", encoding="utf-8")
 
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.probe",
+        "reelgrep.index.probe",
         lambda p: fake_meta.model_copy(update={"path": str(p)}),
     )
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.extract_embedded", lambda *a, **k: []
+        "reelgrep.index.extract_embedded", lambda *a, **k: []
     )
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.find_sidecars", lambda p: [sidecar]
+        "reelgrep.index.find_sidecars", lambda p: [sidecar]
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.parse_sidecar", lambda p: track)
+    monkeypatch.setattr("reelgrep.index.parse_sidecar", lambda p: track)
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+        "reelgrep.index.sample_every", lambda *a, **k: fake_frames
     )
 
     runner = CliRunner()
@@ -179,18 +179,18 @@ def test_no_subtitles_flag_skips_subtitle_writes(
     sidecar.write_text("dummy", encoding="utf-8")
 
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.probe",
+        "reelgrep.index.probe",
         lambda p: fake_meta.model_copy(update={"path": str(p)}),
     )
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.extract_embedded", lambda *a, **k: []
+        "reelgrep.index.extract_embedded", lambda *a, **k: []
     )
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.find_sidecars", lambda p: [sidecar]
+        "reelgrep.index.find_sidecars", lambda p: [sidecar]
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.parse_sidecar", lambda p: track)
+    monkeypatch.setattr("reelgrep.index.parse_sidecar", lambda p: track)
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+        "reelgrep.index.sample_every", lambda *a, **k: fake_frames
     )
 
     runner = CliRunner()
@@ -254,11 +254,11 @@ def test_force_replaces_existing_and_wipes_cache(
 
     # Plant marker files inside the cache subdirs that should be wiped on force.
     settings = get_settings()
-    from reelgrep.commands.ingest import _hash_slice
     from reelgrep.hashing import file_hash
+    from reelgrep.index import hash_slice
 
     digest = file_hash(fake_video.resolve())
-    slice_name = _hash_slice(digest)
+    slice_name = hash_slice(digest)
     subs_dir = settings.cache_dir / "subtitles" / slice_name
     frames_dir = settings.cache_dir / "frames" / slice_name
     subs_dir.mkdir(parents=True, exist_ok=True)
@@ -276,7 +276,7 @@ def test_force_replaces_existing_and_wipes_cache(
         real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.shutil.rmtree", tracking_rmtree
+        "reelgrep.index.shutil.rmtree", tracking_rmtree
     )
 
     second = runner.invoke(ingest, [str(fake_video), "--force"])
@@ -332,15 +332,15 @@ def test_transcribe_flag_runs_whisper_when_no_subs(
         return whisper_track
 
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.probe",
+        "reelgrep.index.probe",
         lambda p: fake_meta.model_copy(update={"path": str(p)}),
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.extract_embedded", lambda *a, **k: [])
-    monkeypatch.setattr("reelgrep.commands.ingest.find_sidecars", lambda p: [])
+    monkeypatch.setattr("reelgrep.index.extract_embedded", lambda *a, **k: [])
+    monkeypatch.setattr("reelgrep.index.find_sidecars", lambda p: [])
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+        "reelgrep.index.sample_every", lambda *a, **k: fake_frames
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.run_whisper", fake_whisper)
+    monkeypatch.setattr("reelgrep.index.run_whisper", fake_whisper)
 
     runner = CliRunner()
     result = runner.invoke(ingest, [str(fake_video), "--transcribe"])
@@ -381,18 +381,18 @@ def test_transcribe_flag_skips_when_sidecar_subs_present(
         raise AssertionError("whisper should not run when sidecar subs exist")
 
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.probe",
+        "reelgrep.index.probe",
         lambda p: fake_meta.model_copy(update={"path": str(p)}),
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.extract_embedded", lambda *a, **k: [])
+    monkeypatch.setattr("reelgrep.index.extract_embedded", lambda *a, **k: [])
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.find_sidecars", lambda p: [sidecar]
+        "reelgrep.index.find_sidecars", lambda p: [sidecar]
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.parse_sidecar", lambda p: track)
+    monkeypatch.setattr("reelgrep.index.parse_sidecar", lambda p: track)
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+        "reelgrep.index.sample_every", lambda *a, **k: fake_frames
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.run_whisper", fake_whisper)
+    monkeypatch.setattr("reelgrep.index.run_whisper", fake_whisper)
 
     runner = CliRunner()
     result = runner.invoke(ingest, [str(fake_video), "--transcribe"])
@@ -422,16 +422,16 @@ def test_extract_embedded_ffmpeg_error_is_warned_not_fatal(
         raise FFmpegError(1, "boom", ["ffmpeg"])
 
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.probe",
+        "reelgrep.index.probe",
         lambda p: fake_meta.model_copy(update={"path": str(p)}),
     )
-    monkeypatch.setattr("reelgrep.commands.ingest.extract_embedded", boom)
-    monkeypatch.setattr("reelgrep.commands.ingest.find_sidecars", lambda p: [])
+    monkeypatch.setattr("reelgrep.index.extract_embedded", boom)
+    monkeypatch.setattr("reelgrep.index.find_sidecars", lambda p: [])
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.parse_sidecar", lambda p: _make_track()
+        "reelgrep.index.parse_sidecar", lambda p: _make_track()
     )
     monkeypatch.setattr(
-        "reelgrep.commands.ingest.sample_every", lambda *a, **k: fake_frames
+        "reelgrep.index.sample_every", lambda *a, **k: fake_frames
     )
 
     runner = CliRunner()
