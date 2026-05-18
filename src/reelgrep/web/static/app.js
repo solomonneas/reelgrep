@@ -20,6 +20,9 @@ const state = {
   exportsCache: [],
   searchesCache: [],
   showFullPath: false,
+  facesFilter: "all",
+  facesClusters: [],
+  facesCurrentClusterId: null,
 };
 
 // ---------- helpers ----------
@@ -305,6 +308,7 @@ async function selectVideo(hash, opts = {}) {
   state.showFullPath = false;
   $("empty-state").classList.add("hidden");
   $("global-results").classList.add("hidden");
+  $("faces-view").classList.add("hidden");
   $("video-detail").classList.remove("hidden");
   renderVideoList();
   try {
@@ -796,6 +800,184 @@ document.querySelectorAll("#export-filters .chip").forEach((chip) => {
   });
 });
 
+// ---------- faces ----------
+
+function showFaces() {
+  $("video-detail").classList.add("hidden");
+  $("global-results").classList.add("hidden");
+  $("empty-state").classList.add("hidden");
+  $("faces-view").classList.remove("hidden");
+  hideFacesDetail();
+  loadFaces();
+}
+
+function hideFaces() {
+  $("faces-view").classList.add("hidden");
+  if (state.currentVideoHash) {
+    $("video-detail").classList.remove("hidden");
+  } else {
+    $("empty-state").classList.remove("hidden");
+  }
+}
+
+function hideFacesDetail() {
+  const detail = $("faces-detail");
+  const grid = $("faces-grid");
+  if (detail) detail.classList.add("hidden");
+  if (grid) grid.classList.remove("hidden");
+  state.facesCurrentClusterId = null;
+  const errEl = $("faces-detail-error");
+  if (errEl) {
+    errEl.textContent = "";
+    errEl.classList.add("hidden");
+  }
+}
+
+async function loadFaces() {
+  const grid = $("faces-grid");
+  if (!grid) return;
+  clear(grid);
+  grid.appendChild(el("div", { class: "video-meta" }, ["loading clusters..."]));
+  const filter = state.facesFilter || "all";
+  const params = filter === "labeled" ? { labeled_only: "true" } : null;
+  try {
+    const data = await api("/api/faces/clusters", params);
+    state.facesClusters = data.clusters || [];
+    renderFacesGrid();
+  } catch (_) {
+    clear(grid);
+    grid.appendChild(el("div", { class: "video-meta" }, ["failed to load clusters"]));
+  }
+}
+
+function renderFacesGrid() {
+  const grid = $("faces-grid");
+  clear(grid);
+  const filter = state.facesFilter || "all";
+  const filtered = state.facesClusters.filter((c) => {
+    if (filter === "unlabeled") return !c.label;
+    return true;
+  });
+  if (!filtered.length) {
+    const empty = el("div", { class: "video-meta" }, [
+      "no clusters yet. run ",
+      el("code", {}, ["reelgrep faces cluster"]),
+      " to build them.",
+    ]);
+    grid.appendChild(empty);
+    return;
+  }
+  for (const c of filtered) {
+    const card = el(
+      "button",
+      {
+        type: "button",
+        class: "cluster-card",
+        onclick: () => openClusterDetail(c.id),
+      },
+      [
+        el("div", { class: "cluster-id" }, [`#${c.id}`]),
+        c.label
+          ? el("div", { class: "cluster-label" }, [c.label])
+          : el("div", { class: "cluster-label cluster-label-empty" }, ["unlabeled"]),
+        el("div", { class: "cluster-size" }, [`${c.size || 0} faces`]),
+      ],
+    );
+    grid.appendChild(card);
+  }
+}
+
+async function openClusterDetail(clusterId) {
+  const grid = $("faces-grid");
+  const detail = $("faces-detail");
+  const title = $("faces-detail-title");
+  const labelInput = $("faces-detail-label");
+  const errEl = $("faces-detail-error");
+  const memberGrid = $("faces-detail-members");
+  if (!detail || !title || !labelInput || !memberGrid) return;
+  errEl.textContent = "";
+  errEl.classList.add("hidden");
+  state.facesCurrentClusterId = clusterId;
+  clear(memberGrid);
+  memberGrid.appendChild(el("div", { class: "video-meta" }, ["loading cluster..."]));
+  detail.classList.remove("hidden");
+  grid.classList.add("hidden");
+  try {
+    const data = await api(`/api/faces/clusters/${encodeURIComponent(clusterId)}`);
+    const cluster = data.cluster || {};
+    title.textContent = `Cluster #${cluster.id}  -  ${cluster.size || 0} faces`;
+    labelInput.value = cluster.label || "";
+    clear(memberGrid);
+    const members = data.members || [];
+    if (!members.length) {
+      memberGrid.appendChild(el("div", { class: "video-meta" }, ["no members"]));
+      return;
+    }
+    for (const m of members) {
+      const tile = el("div", { class: "member-card" });
+      tile.appendChild(
+        el("img", {
+          src: fileUrl(m.frame_path),
+          alt: "face frame",
+          loading: "lazy",
+          onclick: () => openLightbox(m.frame_path, m.timestamp_ms),
+        }),
+      );
+      const meta = el("div", { class: "member-meta" });
+      meta.appendChild(
+        el("div", { class: "member-meta-path" }, [
+          truncateMiddle(m.video_path || "", 50),
+        ]),
+      );
+      meta.appendChild(
+        el("div", { class: "cue-time" }, [formatMs(m.timestamp_ms || 0)]),
+      );
+      tile.appendChild(meta);
+      memberGrid.appendChild(tile);
+    }
+  } catch (_) {
+    clear(memberGrid);
+    memberGrid.appendChild(el("div", { class: "video-meta" }, ["failed to load cluster"]));
+  }
+}
+
+async function saveClusterLabel() {
+  const clusterId = state.facesCurrentClusterId;
+  if (clusterId == null) return;
+  const labelInput = $("faces-detail-label");
+  const errEl = $("faces-detail-error");
+  if (!labelInput || !errEl) return;
+  errEl.textContent = "";
+  errEl.classList.add("hidden");
+  const trimmed = (labelInput.value || "").trim();
+  const body = JSON.stringify({ label: trimmed === "" ? null : trimmed });
+  try {
+    const res = await fetch(`/api/faces/clusters/${encodeURIComponent(clusterId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body,
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const errBody = await res.json();
+        detail = errBody.detail || detail;
+      } catch (_) {
+        /* keep statusText */
+      }
+      errEl.textContent = String(detail);
+      errEl.classList.remove("hidden");
+      return;
+    }
+    setStatus("label saved", "ok");
+    await loadFaces();
+    hideFacesDetail();
+  } catch (err) {
+    errEl.textContent = "save failed: " + (err && err.message ? err.message : "network error");
+    errEl.classList.remove("hidden");
+  }
+}
+
 // ---------- global subtitle search ----------
 
 async function runGlobalSearch(query) {
@@ -804,6 +986,7 @@ async function runGlobalSearch(query) {
   const body = $("global-results-body");
   $("video-detail").classList.add("hidden");
   $("empty-state").classList.add("hidden");
+  $("faces-view").classList.add("hidden");
   view.classList.remove("hidden");
   clear(body);
   body.appendChild(el("div", { class: "video-meta" }, [`searching ${state.videos.length} videos for "${query}"...`]));
@@ -924,6 +1107,21 @@ function bindGlobalUI() {
       else setStatus("pick a video first", "error");
     });
   }
+  $("topbar-faces")?.addEventListener("click", showFaces);
+  $("faces-view-close")?.addEventListener("click", hideFaces);
+  $("faces-refresh")?.addEventListener("click", loadFaces);
+  $("faces-filter")?.addEventListener("change", (e) => {
+    state.facesFilter = e.target.value || "all";
+    loadFaces();
+  });
+  $("faces-detail-back")?.addEventListener("click", hideFacesDetail);
+  $("faces-detail-save")?.addEventListener("click", saveClusterLabel);
+  $("faces-detail-label")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveClusterLabel();
+    }
+  });
 }
 
 // kick off

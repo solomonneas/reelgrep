@@ -26,6 +26,7 @@
         <button type="button" data-quicktab="frames">Frames</button>
         <button type="button" data-quicktab="searches">Searches</button>
         <button type="button" data-quicktab="exports">Exports</button>
+        <button type="button" id="topbar-faces">Faces</button>
       </nav>
     </header>
 
@@ -115,6 +116,33 @@
             <button type="button" id="global-results-close" class="link-button">close</button>
           </header>
           <div class="global-results-body" id="global-results-body"></div>
+        </section>
+
+        <section class="faces-view hidden" id="faces-view">
+          <header class="faces-view-header">
+            <h2>Face clusters</h2>
+            <div class="faces-toolbar">
+              <label for="faces-filter">Show:</label>
+              <select id="faces-filter">
+                <option value="all">All</option>
+                <option value="labeled">Labeled only</option>
+                <option value="unlabeled">Unlabeled only</option>
+              </select>
+              <button type="button" id="faces-refresh">Refresh</button>
+              <button type="button" id="faces-view-close" class="link-button">close</button>
+            </div>
+          </header>
+          <div class="faces-grid" id="faces-grid"></div>
+          <section class="faces-detail hidden" id="faces-detail">
+            <div class="faces-detail-header">
+              <button type="button" id="faces-detail-back">Back</button>
+              <h3 id="faces-detail-title"></h3>
+              <input type="text" id="faces-detail-label" placeholder="label (blank to clear)" />
+              <button type="button" id="faces-detail-save">Save label</button>
+              <div id="faces-detail-error" class="error-text hidden"></div>
+            </div>
+            <div class="member-grid" id="faces-detail-members"></div>
+          </section>
         </section>
       </section>
     </main>
