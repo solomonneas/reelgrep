@@ -13,6 +13,7 @@ from reelgrep.db import connect, migrate
 from reelgrep.ffmpeg_exec import FFmpegError, run_ffmpeg
 from reelgrep.hashing import file_hash
 from reelgrep.manifest import Manifest, Source, write
+from reelgrep.search import Search
 
 __all__ = ["search_subtitles"]
 
@@ -76,31 +77,22 @@ def search_subtitles(
 
         video_id = row[0]
         duration_ms = row[1]
-
-        cursor = conn.execute(
-            """
-            SELECT s.id, s.start_ms, s.end_ms, s.text, s.language
-            FROM subtitles_fts
-            JOIN subtitles AS s ON s.id = subtitles_fts.rowid
-            WHERE subtitles_fts MATCH ?
-              AND s.video_id = ?
-            ORDER BY s.start_ms
-            LIMIT ?
-            """,
-            (query, video_id, limit),
-        )
-        matches = [
-            {
-                "id": r[0],
-                "start_ms": r[1],
-                "end_ms": r[2],
-                "text": r[3],
-                "language": r[4],
-            }
-            for r in cursor.fetchall()
-        ]
     finally:
         conn.close()
+
+    hits = Search(db_path=settings.db_path).subtitles(
+        query, limit=limit, video_id=video_id
+    )
+    matches = [
+        {
+            "id": hit.id,
+            "start_ms": hit.start_ms,
+            "end_ms": hit.end_ms,
+            "text": hit.text,
+            "language": hit.language,
+        }
+        for hit in hits
+    ]
 
     if not matches:
         click.echo("no matches")

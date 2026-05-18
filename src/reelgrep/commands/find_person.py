@@ -18,6 +18,7 @@ from reelgrep.index import hash_slice
 from reelgrep.manifest import Manifest, Source, write
 from reelgrep.models import ModelError, get_person_model
 from reelgrep.probe import probe
+from reelgrep.search import Search
 
 __all__ = ["find_person"]
 
@@ -176,24 +177,24 @@ def find_person(
             video_id = row["id"]
             duration_ms = row["duration_ms"]
 
-        frame_rows = conn.execute(
-            "SELECT id, timestamp_ms, path, sampling_strategy "
-            "FROM frames WHERE video_id = ? ORDER BY timestamp_ms",
-            (video_id,),
-        ).fetchall()
+        # All frames previously sampled for this video, ordered by timestamp.
+        # ``limit`` is set high enough that any realistic ingest fits.
+        frame_rows = Search(db_path=settings.db_path).frames_at(
+            video_id=int(video_id), limit=1_000_000
+        )
 
         frames: list[Frame]
         frame_ids: list[int]
         if frame_rows:
             frames = [
                 Frame(
-                    timestamp_ms=int(r["timestamp_ms"]),
-                    path=str(r["path"]),
-                    sampling_strategy=r["sampling_strategy"],
+                    timestamp_ms=r.timestamp_ms,
+                    path=r.path,
+                    sampling_strategy=r.sampling_strategy,
                 )
                 for r in frame_rows
             ]
-            frame_ids = [int(r["id"]) for r in frame_rows]
+            frame_ids = [r.id for r in frame_rows]
         else:
             frames_cache = settings.cache_dir / "frames" / hash_slice(digest)
             frames_cache.mkdir(parents=True, exist_ok=True)

@@ -31,6 +31,7 @@ def create_app(db_path: Path | None = None):
     from reelgrep import __version__
     from reelgrep.config import ensure_dirs
     from reelgrep.db import connect, migrate
+    from reelgrep.search import Search
 
     if db_path is None:
         settings = ensure_dirs()
@@ -121,6 +122,8 @@ def create_app(db_path: Path | None = None):
             total = conn.execute(
                 "SELECT COUNT(*) FROM frames WHERE video_id = ?", (video_id,)
             ).fetchone()[0]
+            # OFFSET-paginated; Search.frames_at does not expose OFFSET, so the
+            # route keeps its own SQL here.
             frames = conn.execute(
                 "SELECT id, timestamp_ms, path, sampling_strategy FROM frames "
                 "WHERE video_id = ? ORDER BY timestamp_ms ASC LIMIT ? OFFSET ?",
@@ -142,7 +145,7 @@ def create_app(db_path: Path | None = None):
         conn = _conn()
         try:
             row = _video_by_hash(conn, file_hash)
-            video_id = row["id"]
+            video_id = int(row["id"])
             if q:
                 total = conn.execute(
                     "SELECT COUNT(*) FROM subtitles s "
@@ -150,14 +153,20 @@ def create_app(db_path: Path | None = None):
                     "WHERE s.video_id = ? AND subtitles_fts MATCH ?",
                     (video_id, q),
                 ).fetchone()[0]
-                cues = conn.execute(
-                    "SELECT s.id, s.start_ms, s.end_ms, s.text, s.language, s.source "
-                    "FROM subtitles s "
-                    "JOIN subtitles_fts fts ON fts.rowid = s.id "
-                    "WHERE s.video_id = ? AND subtitles_fts MATCH ? "
-                    "ORDER BY s.start_ms ASC LIMIT ?",
-                    (video_id, q, limit),
-                ).fetchall()
+                hits = Search(db_path=resolved_db_path).subtitles(
+                    q, limit=limit, video_id=video_id
+                )
+                cues_payload = [
+                    {
+                        "id": h.id,
+                        "start_ms": h.start_ms,
+                        "end_ms": h.end_ms,
+                        "text": h.text,
+                        "language": h.language,
+                        "source": h.source,
+                    }
+                    for h in hits
+                ]
             else:
                 total = conn.execute(
                     "SELECT COUNT(*) FROM subtitles WHERE video_id = ?",
@@ -168,9 +177,10 @@ def create_app(db_path: Path | None = None):
                     "WHERE video_id = ? ORDER BY start_ms ASC LIMIT ?",
                     (video_id, limit),
                 ).fetchall()
+                cues_payload = [_row_to_cue(c) for c in cues]
             return JSONResponse(
                 {
-                    "cues": [_row_to_cue(c) for c in cues],
+                    "cues": cues_payload,
                     "total": int(total),
                 }
             )
@@ -178,22 +188,26 @@ def create_app(db_path: Path | None = None):
             conn.close()
 
     async def list_searches(request: Request) -> JSONResponse:
-        conn = _conn()
-        try:
-            rows = conn.execute(
-                "SELECT ps.id, ps.video_id, v.file_hash AS video_hash, ps.label, ps.backend, "
-                "       ps.threshold, ps.created_at, "
-                "       (SELECT COUNT(*) FROM person_matches pm WHERE pm.search_id = ps.id) "
-                "         AS match_count "
-                "FROM person_searches ps "
-                "JOIN videos v ON v.id = ps.video_id "
-                "ORDER BY ps.created_at DESC"
-            ).fetchall()
-            return JSONResponse(
-                {"searches": [_row_to_search_summary(r) for r in rows]}
-            )
-        finally:
-            conn.close()
+        # The route previously ran an uncapped query. Use a large bound here
+        # so behaviour is identical for realistic indexes; route-level paging
+        # can refine this later.
+        hits = Search(db_path=resolved_db_path).detections(limit=10_000)
+        return JSONResponse(
+            {
+                "searches": [
+                    {
+                        "id": h.id,
+                        "video_hash": h.video_hash,
+                        "label": h.label,
+                        "backend": h.model,
+                        "threshold": h.threshold,
+                        "created_at": h.created_at,
+                        "match_count": h.match_count,
+                    }
+                    for h in hits
+                ]
+            }
+        )
 
     async def get_search(request: Request) -> JSONResponse:
         search_id = request.path_params["search_id"]
