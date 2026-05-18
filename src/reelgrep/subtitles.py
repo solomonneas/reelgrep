@@ -59,10 +59,12 @@ class SubtitleTrack(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source: Literal["embedded", "sidecar", "whisper"]
+    source: Literal["embedded", "sidecar", "whisper", "aligned"]
     stream_index: int | None = None
     language: str | None = None
-    format: Literal["srt", "vtt", "ass", "ssa", "mov_text", "whisper", "unknown"] = "unknown"
+    format: Literal[
+        "srt", "vtt", "ass", "ssa", "mov_text", "whisper", "aligned", "unknown"
+    ] = "unknown"
     cues: list[SubtitleCue]
 
 
