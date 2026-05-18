@@ -14,6 +14,7 @@ from reelgrep.commands.jellyfin import jellyfin
 from reelgrep.commands.ls import ls
 from reelgrep.commands.make_gif import make_gif
 from reelgrep.commands.search_subtitles import search_subtitles
+from reelgrep.commands.serve import serve
 from reelgrep.commands.transcribe import transcribe_cmd as transcribe
 from reelgrep.config import set_db_override
 
@@ -30,7 +31,7 @@ def main(db_override: str | None, quiet: bool | None) -> None:
 
 
 for cmd in (ingest, export_clip, make_gif, search_subtitles, contact_sheet,
-            find_person, transcribe, info, ls, jellyfin):
+            find_person, serve, transcribe, info, ls, jellyfin):
     main.add_command(cmd)
 
 
