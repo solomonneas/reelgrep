@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>reelgrep</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-name">reelgrep</span>
+        <span class="brand-version" id="version">v?</span>
+      </div>
+      <form class="global-search" id="global-search-form">
+        <input
+          type="search"
+          id="global-search-input"
+          placeholder="search subtitles across all videos..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button type="submit">Search</button>
+      </form>
+      <nav class="topbar-nav">
+        <button type="button" data-quicktab="frames">Frames</button>
+        <button type="button" data-quicktab="searches">Searches</button>
+        <button type="button" data-quicktab="exports">Exports</button>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-header">VIDEOS</div>
+        <form class="sidebar-search" id="sidebar-search-form">
+          <input
+            type="search"
+            id="sidebar-search-input"
+            placeholder="search subtitles..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </form>
+        <div class="sidebar-search-status" id="sidebar-search-status"></div>
+        <ul class="video-list" id="video-list">
+          <li class="video-list-empty">Loading...</li>
+        </ul>
+      </aside>
+
+      <section class="main-pane" id="main-pane">
+        <div class="empty-state" id="empty-state">
+          <h2>Pick a video from the sidebar</h2>
+          <p>Or use the global search to find subtitle hits across every ingested video.</p>
+        </div>
+
+        <article class="video-detail hidden" id="video-detail">
+          <header class="video-header">
+            <h1 id="video-title">video</h1>
+            <div class="video-path">
+              <span id="video-path-display" class="video-path-display"></span>
+              <button type="button" id="video-path-toggle" class="link-button">show full path</button>
+            </div>
+            <div class="video-meta" id="video-meta"></div>
+            <div class="video-counts" id="video-counts"></div>
+          </header>
+
+          <nav class="tabs" id="tabs">
+            <button type="button" class="tab active" data-tab="overview">Overview</button>
+            <button type="button" class="tab" data-tab="frames">Frames</button>
+            <button type="button" class="tab" data-tab="subtitles">Subtitles</button>
+            <button type="button" class="tab" data-tab="searches">Searches</button>
+            <button type="button" class="tab" data-tab="exports">Exports</button>
+          </nav>
+
+          <section class="tab-panel" id="tab-overview"></section>
+          <section class="tab-panel hidden" id="tab-frames">
+            <div class="frames-toolbar">
+              <button type="button" id="frames-prev">Prev</button>
+              <span id="frames-pageinfo">page 1</span>
+              <button type="button" id="frames-next">Next</button>
+            </div>
+            <div class="frames-grid" id="frames-grid"></div>
+          </section>
+          <section class="tab-panel hidden" id="tab-subtitles">
+            <form class="subtitle-search" id="subtitle-search-form">
+              <input
+                type="search"
+                id="subtitle-search-input"
+                placeholder="search subtitles in this video..."
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button type="submit">Search</button>
+              <button type="button" id="subtitle-clear">Clear</button>
+            </form>
+            <div class="subtitle-results" id="subtitle-results"></div>
+            <div class="subtitle-preview hidden" id="subtitle-preview"></div>
+          </section>
+          <section class="tab-panel hidden" id="tab-searches"></section>
+          <section class="tab-panel hidden" id="tab-exports">
+            <div class="export-filters" id="export-filters">
+              <button type="button" class="chip active" data-kind="">All</button>
+              <button type="button" class="chip" data-kind="screenshot">Screenshot</button>
+              <button type="button" class="chip" data-kind="clip">Clip</button>
+              <button type="button" class="chip" data-kind="gif">GIF</button>
+              <button type="button" class="chip" data-kind="contact_sheet">Contact Sheet</button>
+            </div>
+            <ul class="export-list" id="export-list"></ul>
+          </section>
+        </article>
+
+        <section class="global-results hidden" id="global-results">
+          <header class="global-results-header">
+            <h2>Subtitle search results</h2>
+            <button type="button" id="global-results-close" class="link-button">close</button>
+          </header>
+          <div class="global-results-body" id="global-results-body"></div>
+        </section>
+      </section>
+    </main>
+
+    <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true">
+      <div class="lightbox-backdrop" id="lightbox-backdrop"></div>
+      <div class="lightbox-inner">
+        <img id="lightbox-img" alt="" />
+        <div class="lightbox-meta">
+          <span id="lightbox-timestamp"></span>
+          <button type="button" id="lightbox-copy" class="link-button">copy timestamp</button>
+          <button type="button" id="lightbox-close" class="link-button">close</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="statusbar" id="statusbar" aria-live="polite"></div>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
