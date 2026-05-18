@@ -2,7 +2,7 @@
 
 > Local video search and media analysis. Find people, outfits, objects, scenes, spoken phrases, and useful clips inside your own video library.
 
-Status: v0.3.0. Local browser UI shipped (`reelgrep serve`) so the whole library is browseable, searchable across every video at once, and inspectable down to per-frame thumbnails - no command-line gymnastics required. TypeScript MCP wrapper still planned for a later release.
+Status: v0.4.0. Align command shipped: when a clean official transcript exists (PDF / TXT / MD) you can map it onto the Whisper timestamps to get accurate timing PLUS the institution's exact text. Web UI, transcription, and the TypeScript MCP wrapper (separate repo) all still work as before.
 
 reelgrep indexes video files on disk: it runs `ffprobe` for metadata, samples frames at a configurable interval, builds contact sheets, extracts embedded and sidecar subtitles into a SQLite FTS5 table you can grep, and exports clips, screenshots, and animated WebP loops with a JSON manifest sidecar for each output. Person and object detection is pluggable, with a face-embedding backend and an Ollama vision-LLM backend; both accept confirmed positive AND negative reference images so lookalikes do not slip through. Everything runs on your machine - frames, clips, manifests, and the index all stay on disk under your home directory by default, and nothing leaves the box without you configuring it to.
 
@@ -32,8 +32,11 @@ pipx install "reelgrep[whisper]"
 # With the local browser UI (starlette + uvicorn):
 pipx install "reelgrep[web]"
 
+# With prose-transcript alignment (pypdf + rapidfuzz, ~1MB):
+pipx install "reelgrep[align]"
+
 # Everything:
-pipx install "reelgrep[face,vision,whisper,web]"
+pipx install "reelgrep[face,vision,whisper,web,align]"
 ```
 
 System dependency: `ffmpeg` and `ffprobe` must be on PATH. On Ubuntu:
@@ -108,6 +111,31 @@ Real numbers from an 18-minute 720p lecture screen recording: `tiny` model finis
 The cues are stored alongside any embedded or sidecar subtitles with `source='whisper'`, so the index treats them uniformly. Re-running transcribe on the same video is a no-op unless you pass `--force`. Pass `--no-db` to print the cues as JSON to stdout instead of writing to the index.
 
 You can also fold transcription into ingest itself: `reelgrep ingest ~/lecture.mp4 --transcribe` runs Whisper only when the normal embedded/sidecar pass finds nothing.
+
+### Align an official transcript onto Whisper timestamps
+
+If the institution ships a clean prose transcript next to the video (Canvas / Kaltura courses, conference talk hosts that post the speaker's text afterwards), Whisper's transcription is the wrong source of truth - the official transcript is cleaner and uses correct terminology. `reelgrep align` maps the official text onto the Whisper-derived timestamps so you keep accurate timing AND the canonical wording.
+
+```bash
+reelgrep align ~/Videos/lecture.mp4 --transcript ~/Videos/lecture_transcript.pdf --out lecture.srt
+```
+
+Output:
+
+```text
+aligned:        /home/you/Videos/lecture.mp4
+transcript:     /home/you/Videos/lecture_transcript.pdf
+language:       en
+cues:           221 (matched 2631/2650 transcript words, coverage 99.3%)
+avg similarity: 0.98
+srt:            /home/you/lecture.srt
+```
+
+Real numbers from an 18-minute USF lecture aligned against the course's official PDF transcript: 221 cues, 99.3% coverage of transcript words, 0.98 average similarity. The aligned cues preserve official terminology ("module one" vs Whisper's "module 1"), proper punctuation, and capitalization that Whisper either drops or mis-spells.
+
+Accepts `.txt`, `.md`, `.pdf` transcripts. Auto-runs `whisper:tiny` if no cues exist for the video yet, so the typical flow is one-shot. Cues land in the `subtitles` table with `source='aligned'` so they coexist with `whisper`, `embedded`, and `sidecar` sources. The optional `--out file.srt` writes a standard SRT file you can hand to a video player.
+
+Cues whose similarity to the transcript falls below `--min-similarity` (default 0.55) keep their original Whisper text rather than being fabricated - if the transcript doesn't actually match the audio for a stretch (Q&A inserted, slide change, etc.), the engine refuses to invent alignment.
 
 ### Browse the whole library in a local web UI
 
@@ -233,6 +261,7 @@ Switch engines with `--backend ollama_vision` on the `find-person` command. Both
 | `reelgrep contact-sheet <video> --out` | Build a grid of thumbnails. See [Build a contact sheet](#build-a-contact-sheet). |
 | `reelgrep search-subtitles <video> <query>` | FTS5 search over indexed subtitle cues. See [Search what was said](#search-what-was-said). |
 | `reelgrep transcribe <video> --model` | Whisper-transcribe and index cues for an un-captioned video. See [Transcribe a video without subtitles](#transcribe-a-video-without-subtitles). |
+| `reelgrep align <video> --transcript <file>` | Map a clean prose transcript onto Whisper timestamps. See [Align an official transcript onto Whisper timestamps](#align-an-official-transcript-onto-whisper-timestamps). |
 | `reelgrep find-person <video> --label --positive --out` | Locate frames containing a person. See [Find a specific person](#find-a-specific-person). |
 | `reelgrep serve [--port 8765]` | Open the local browser UI for the whole index. See [Browse the whole library](#browse-the-whole-library-in-a-local-web-ui). |
 | `reelgrep jellyfin resolve <query>` | Resolve a Jellyfin item to its local file path for piping. |
@@ -244,7 +273,7 @@ Switch engines with `--backend ollama_vision` on the `find-person` command. Both
 git clone https://github.com/solomonneas/reelgrep
 cd reelgrep
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev,face,vision,whisper,web]"
+.venv/bin/pip install -e ".[dev,face,vision,whisper,web,align]"
 .venv/bin/pytest
 .venv/bin/ruff check .
 ```
@@ -259,10 +288,11 @@ Tests marked `integration` shell out to the real `ffmpeg`, `ffprobe`, and `insig
 
 Queued for later releases:
 
-- TypeScript MCP wrapper for agentic use.
-- WhisperX-style alignment of existing prose transcripts (PDF / TXT) to audio without re-transcribing ([#2](https://github.com/solomonneas/reelgrep/issues/2)).
 - Writing thumbnails and chapters back to Jellyfin.
 - Cross-video person clustering ("find all distinct faces in this whole library").
+- True wav2vec2 word-level alignment for cases where cue-level timing isn't tight enough.
+
+Shipped in v0.4.0: prose-transcript alignment (`reelgrep align`) via the `[align]` extra, plus a public Python library API (`reelgrep.index.ingest_video`) for embedders. See [Align an official transcript onto Whisper timestamps](#align-an-official-transcript-onto-whisper-timestamps). The MCP wrapper for agentic use also shipped as its own repo at [solomonneas/reelgrep-mcp](https://github.com/solomonneas/reelgrep-mcp) (`npm install -g reelgrep-mcp`).
 
 Shipped in v0.3.0: local browser UI (`reelgrep serve`) backed by a Starlette JSON API + vanilla HTML/CSS/JS frontend, with cross-library subtitle search as the headline feature. See [Browse the whole library in a local web UI](#browse-the-whole-library-in-a-local-web-ui).
 

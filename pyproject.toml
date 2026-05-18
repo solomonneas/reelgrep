@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reelgrep"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local video search and media analysis: ffprobe metadata, frame sampling, contact sheets, subtitle search, clip export, and pluggable person/object detection."
 readme = "README.md"
 license = { text = "MIT" }
