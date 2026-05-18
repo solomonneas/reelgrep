@@ -81,14 +81,16 @@ def _make_track() -> SubtitleTrack:
 def patched_pipeline(
     monkeypatch: pytest.MonkeyPatch, fake_video: Path
 ) -> dict[str, Any]:
+    """Stub probe + whisper inference for the DB-write CLI paths.
+
+    The CLI delegates to ``reelgrep.transcribe.transcribe_video``, which
+    resolves ``probe`` and ``transcribe`` from the library module, so we
+    patch them there.
+    """
     meta = _make_meta(str(fake_video.resolve()))
     track = _make_track()
-    monkeypatch.setattr(
-        "reelgrep.commands.transcribe.probe", lambda p: meta
-    )
-    monkeypatch.setattr(
-        "reelgrep.commands.transcribe.transcribe", lambda *a, **k: track
-    )
+    monkeypatch.setattr("reelgrep.transcribe.probe", lambda p: meta)
+    monkeypatch.setattr("reelgrep.transcribe.transcribe", lambda *a, **k: track)
     return {"meta": meta, "track": track}
 
 
@@ -273,9 +275,9 @@ def test_empty_cues_handled(
         format="whisper",
         cues=[],
     )
-    monkeypatch.setattr("reelgrep.commands.transcribe.probe", lambda p: meta)
+    monkeypatch.setattr("reelgrep.transcribe.probe", lambda p: meta)
     monkeypatch.setattr(
-        "reelgrep.commands.transcribe.transcribe", lambda *a, **k: empty_track
+        "reelgrep.transcribe.transcribe", lambda *a, **k: empty_track
     )
 
     runner = CliRunner()
@@ -303,8 +305,8 @@ def test_transcribe_error_surfaces_as_exit_2(
     def boom(*_a: Any, **_k: Any) -> SubtitleTrack:
         raise TranscribeError("ctranslate2 missing")
 
-    monkeypatch.setattr("reelgrep.commands.transcribe.probe", lambda p: meta)
-    monkeypatch.setattr("reelgrep.commands.transcribe.transcribe", boom)
+    monkeypatch.setattr("reelgrep.transcribe.probe", lambda p: meta)
+    monkeypatch.setattr("reelgrep.transcribe.transcribe", boom)
 
     runner = CliRunner()
     result = runner.invoke(transcribe_cmd, [str(fake_video)])
@@ -322,10 +324,11 @@ def test_no_db_prints_json_and_skips_db(
     monkeypatch.setattr(
         "reelgrep.commands.transcribe.transcribe", lambda *a, **k: track
     )
-    # probe should NOT be needed - if it gets called, the test should fail
+    # probe should NOT run on the --no-db path. Patch it on the library
+    # module (the only place it lives now) so any accidental call fails.
     def fail_probe(_p: Path) -> Any:
         raise AssertionError("probe should not run when --no-db is set")
-    monkeypatch.setattr("reelgrep.commands.transcribe.probe", fail_probe)
+    monkeypatch.setattr("reelgrep.transcribe.probe", fail_probe)
 
     runner = CliRunner()
     result = runner.invoke(transcribe_cmd, [str(fake_video), "--no-db"])
