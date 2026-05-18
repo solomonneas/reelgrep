@@ -34,8 +34,8 @@ def test_migrate_applies_schema_and_sets_version(tmp_path):
     conn = connect(tmp_path / "migrate.db")
     try:
         new_version = migrate(conn)
-        assert new_version == SCHEMA_VERSION == 2
-        assert current_version(conn) == 2
+        assert new_version == SCHEMA_VERSION == 3
+        assert current_version(conn) == 3
     finally:
         conn.close()
 
@@ -65,7 +65,7 @@ def test_migrate_is_idempotent(tmp_path):
     try:
         first = migrate(conn)
         second = migrate(conn)
-        assert first == second == 2
+        assert first == second == 3
         # Sanity: schema_version still has exactly one row.
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         assert count == 1
@@ -185,13 +185,13 @@ def test_schema_version_is_two_on_fresh(tmp_path):
     conn = connect(db_path)
     try:
         migrate(conn)
-        assert current_version(conn) == 2
+        assert current_version(conn) == 3
     finally:
         conn.close()
 
 
 def test_subtitles_accepts_whisper_source(tmp_path):
-    """Fresh v2 DB must accept source='whisper' rows."""
+    """Fresh DB must accept source='whisper' rows."""
     db_path = tmp_path / "v2.sqlite"
     conn = connect(db_path)
     try:
@@ -298,7 +298,10 @@ def test_in_place_upgrade_from_v1_to_v2(tmp_path):
     try:
         assert current_version(conn) == 1
         migrate(conn)
-        assert current_version(conn) == 2
+        # migrate() chains forward to SCHEMA_VERSION (currently 3), so a v1 DB
+        # lands at v3 in one call. We still assert that v2 was reached along the
+        # way by virtue of 'whisper' being accepted afterward.
+        assert current_version(conn) == 3
 
         rows = conn.execute(
             "SELECT source, text FROM subtitles WHERE video_id = ?", (vid,)
@@ -325,7 +328,7 @@ def test_in_place_upgrade_from_v1_to_v2(tmp_path):
         ).fetchall()
         assert [r["source"] for r in new_rows] == ["embedded", "whisper"]
 
-        assert migrate(conn) == 2
+        assert migrate(conn) == 3
     finally:
         conn.close()
 
@@ -335,7 +338,260 @@ def test_in_place_upgrade_idempotent_when_already_v2(tmp_path):
     conn = connect(db_path)
     try:
         migrate(conn)
-        assert migrate(conn) == 2
-        assert migrate(conn) == 2
+        assert migrate(conn) == 3
+        assert migrate(conn) == 3
+    finally:
+        conn.close()
+
+
+def test_schema_version_is_three_on_fresh(tmp_path):
+    db_path = tmp_path / "fresh_v3.sqlite"
+    conn = connect(db_path)
+    try:
+        migrate(conn)
+        assert current_version(conn) == 3
+        assert SCHEMA_VERSION == 3
+    finally:
+        conn.close()
+
+
+def test_subtitles_accepts_aligned_source(tmp_path):
+    """Fresh v3 DB must accept source='aligned' rows."""
+    db_path = tmp_path / "v3_aligned.sqlite"
+    conn = connect(db_path)
+    try:
+        migrate(conn)
+        conn.execute(
+            "INSERT INTO videos (file_hash, path, ingested_at, probe_json) VALUES (?, ?, ?, ?)",
+            ("blake2b:aligned", "/a.mp4", "2026-05-17T00:00:00", "{}"),
+        )
+        vid = conn.execute(
+            "SELECT id FROM videos WHERE file_hash='blake2b:aligned'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO subtitles "
+            "(video_id, language, source, stream_index, start_ms, end_ms, text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (vid, "en", "aligned", None, 0, 2000, "aligned cue"),
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT source FROM subtitles WHERE video_id = ?", (vid,)
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "aligned"
+    finally:
+        conn.close()
+
+
+def test_subtitles_still_rejects_garbage_source_v3(tmp_path):
+    db_path = tmp_path / "v3reject.sqlite"
+    conn = connect(db_path)
+    try:
+        migrate(conn)
+        conn.execute(
+            "INSERT INTO videos (file_hash, path, ingested_at, probe_json) VALUES (?, ?, ?, ?)",
+            ("blake2b:bogus", "/b.mp4", "2026-05-17T00:00:00", "{}"),
+        )
+        vid = conn.execute(
+            "SELECT id FROM videos WHERE file_hash='blake2b:bogus'"
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO subtitles "
+                "(video_id, language, source, stream_index, start_ms, end_ms, text) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (vid, "en", "bogus", None, 0, 1000, "x"),
+            )
+    finally:
+        conn.close()
+
+
+def test_in_place_upgrade_from_v2_to_v3(tmp_path):
+    """Pre-existing v2 DB must migrate cleanly and accept 'aligned' afterward."""
+    db_path = tmp_path / "v2_to_v3.sqlite"
+    # Build a v2 DB by hand (mimicking the v2 schema verbatim).
+    raw = sqlite3.connect(str(db_path))
+    raw.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version VALUES (2);
+        CREATE TABLE videos (
+          id INTEGER PRIMARY KEY, file_hash TEXT UNIQUE NOT NULL, path TEXT NOT NULL,
+          duration_ms INTEGER, width INTEGER, height INTEGER, fps REAL,
+          container TEXT, video_codec TEXT, audio_codec TEXT, size_bytes INTEGER,
+          ingested_at TEXT NOT NULL, probe_json TEXT NOT NULL
+        );
+        CREATE INDEX idx_videos_path ON videos(path);
+        CREATE TABLE subtitles (
+          id INTEGER PRIMARY KEY,
+          video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+          language TEXT,
+          source TEXT NOT NULL CHECK(source IN ('embedded','sidecar','whisper')),
+          stream_index INTEGER,
+          start_ms INTEGER NOT NULL,
+          end_ms INTEGER NOT NULL,
+          text TEXT NOT NULL
+        );
+        CREATE INDEX idx_subtitles_video_ts ON subtitles(video_id, start_ms);
+        CREATE VIRTUAL TABLE subtitles_fts USING fts5(
+          text, content='subtitles', content_rowid='id', tokenize='porter unicode61'
+        );
+        """
+    )
+    raw.execute(
+        "INSERT INTO videos (file_hash, path, ingested_at, probe_json) VALUES (?, ?, ?, ?)",
+        ("blake2b:v2keep", "/v2old.mp4", "2026-05-17T00:00:00", "{}"),
+    )
+    vid = raw.execute(
+        "SELECT id FROM videos WHERE file_hash='blake2b:v2keep'"
+    ).fetchone()[0]
+    cur = raw.execute(
+        "INSERT INTO subtitles "
+        "(video_id, language, source, stream_index, start_ms, end_ms, text) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (vid, "en", "whisper", None, 0, 1500, "preserved whisper cue"),
+    )
+    raw.execute(
+        "INSERT INTO subtitles_fts(rowid, text) VALUES (?, ?)",
+        (cur.lastrowid, "preserved whisper cue"),
+    )
+    raw.commit()
+    raw.close()
+
+    conn = connect(db_path)
+    try:
+        assert current_version(conn) == 2
+        migrate(conn)
+        assert current_version(conn) == 3
+
+        rows = conn.execute(
+            "SELECT source, text FROM subtitles WHERE video_id = ?", (vid,)
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["source"] == "whisper"
+        assert rows[0]["text"] == "preserved whisper cue"
+
+        fts_rows = conn.execute(
+            "SELECT s.text FROM subtitles_fts JOIN subtitles s ON s.id = subtitles_fts.rowid "
+            "WHERE subtitles_fts MATCH 'preserved'"
+        ).fetchall()
+        assert len(fts_rows) == 1
+
+        conn.execute(
+            "INSERT INTO subtitles "
+            "(video_id, language, source, stream_index, start_ms, end_ms, text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (vid, "en", "aligned", None, 2000, 4000, "new aligned cue"),
+        )
+        conn.commit()
+        new_rows = conn.execute(
+            "SELECT source FROM subtitles WHERE video_id = ? ORDER BY start_ms", (vid,)
+        ).fetchall()
+        assert [r["source"] for r in new_rows] == ["whisper", "aligned"]
+
+        assert migrate(conn) == 3
+    finally:
+        conn.close()
+
+
+def test_in_place_upgrade_from_v1_to_v3_chain(tmp_path):
+    """Pre-existing v1 DB must chain v1->v2->v3 in a single migrate() call."""
+    db_path = tmp_path / "v1_to_v3.sqlite"
+    raw = sqlite3.connect(str(db_path))
+    raw.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version VALUES (1);
+        CREATE TABLE videos (
+          id INTEGER PRIMARY KEY, file_hash TEXT UNIQUE NOT NULL, path TEXT NOT NULL,
+          duration_ms INTEGER, width INTEGER, height INTEGER, fps REAL,
+          container TEXT, video_codec TEXT, audio_codec TEXT, size_bytes INTEGER,
+          ingested_at TEXT NOT NULL, probe_json TEXT NOT NULL
+        );
+        CREATE INDEX idx_videos_path ON videos(path);
+        CREATE TABLE subtitles (
+          id INTEGER PRIMARY KEY,
+          video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+          language TEXT,
+          source TEXT NOT NULL CHECK(source IN ('embedded','sidecar')),
+          stream_index INTEGER,
+          start_ms INTEGER NOT NULL,
+          end_ms INTEGER NOT NULL,
+          text TEXT NOT NULL
+        );
+        CREATE INDEX idx_subtitles_video_ts ON subtitles(video_id, start_ms);
+        CREATE VIRTUAL TABLE subtitles_fts USING fts5(
+          text, content='subtitles', content_rowid='id', tokenize='porter unicode61'
+        );
+        """
+    )
+    raw.execute(
+        "INSERT INTO videos (file_hash, path, ingested_at, probe_json) VALUES (?, ?, ?, ?)",
+        ("blake2b:chain", "/chain.mp4", "2026-05-17T00:00:00", "{}"),
+    )
+    vid = raw.execute(
+        "SELECT id FROM videos WHERE file_hash='blake2b:chain'"
+    ).fetchone()[0]
+    cur = raw.execute(
+        "INSERT INTO subtitles "
+        "(video_id, language, source, stream_index, start_ms, end_ms, text) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (vid, "en", "embedded", 0, 0, 1000, "chain cue"),
+    )
+    raw.execute(
+        "INSERT INTO subtitles_fts(rowid, text) VALUES (?, ?)",
+        (cur.lastrowid, "chain cue"),
+    )
+    raw.commit()
+    raw.close()
+
+    conn = connect(db_path)
+    try:
+        assert current_version(conn) == 1
+        result = migrate(conn)
+        assert result == 3
+        assert current_version(conn) == 3
+
+        rows = conn.execute(
+            "SELECT source, text FROM subtitles WHERE video_id = ?", (vid,)
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["source"] == "embedded"
+        assert rows[0]["text"] == "chain cue"
+
+        # Both 'whisper' (added v2) and 'aligned' (added v3) must now be accepted.
+        conn.execute(
+            "INSERT INTO subtitles "
+            "(video_id, language, source, stream_index, start_ms, end_ms, text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (vid, "en", "whisper", None, 1000, 2000, "chain whisper cue"),
+        )
+        conn.execute(
+            "INSERT INTO subtitles "
+            "(video_id, language, source, stream_index, start_ms, end_ms, text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (vid, "en", "aligned", None, 2000, 3000, "chain aligned cue"),
+        )
+        conn.commit()
+        sources = [
+            r["source"]
+            for r in conn.execute(
+                "SELECT source FROM subtitles WHERE video_id = ? ORDER BY start_ms", (vid,)
+            ).fetchall()
+        ]
+        assert sources == ["embedded", "whisper", "aligned"]
+    finally:
+        conn.close()
+
+
+def test_in_place_upgrade_idempotent_on_v3(tmp_path):
+    db_path = tmp_path / "already_v3.sqlite"
+    conn = connect(db_path)
+    try:
+        migrate(conn)
+        assert current_version(conn) == 3
+        assert migrate(conn) == 3
+        assert migrate(conn) == 3
     finally:
         conn.close()

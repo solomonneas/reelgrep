@@ -8,12 +8,13 @@ from pathlib import Path
 
 __all__ = ["SCHEMA_VERSION", "connect", "current_version", "migrate"]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Forward migrations: each key is the target version; the value is the
 # .sql resource name applied to upgrade FROM (key - 1) TO key.
 _FORWARD_MIGRATIONS: dict[int, str] = {
     2: "migration_v1_to_v2.sql",
+    3: "migration_v2_to_v3.sql",
 }
 
 
