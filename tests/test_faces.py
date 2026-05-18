@@ -119,6 +119,27 @@ def test_extract_faces_idempotent_for_same_model(tmp_path, monkeypatch):
     assert second.skipped_existing is True
 
 
+def test_extract_faces_force_replaces_existing_detections(tmp_path, monkeypatch):
+    """`extract_faces(..., force=True)` replaces detections instead of appending."""
+    config.set_db_override(tmp_path / "idx.sqlite")
+    emb = np.random.RandomState(11).randn(512).astype(np.float32)
+    emb /= np.linalg.norm(emb)
+    _fake_insightface(monkeypatch, detections_per_frame=[[((0, 0, 50, 50), emb)]])
+
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    _seed_video_with_frames(conn, n_frames=1, frame_dir=tmp_path)
+    conn.close()
+
+    from reelgrep.faces import extract_faces
+    extract_faces("/some/video.mp4", db_path=tmp_path / "idx.sqlite")
+    extract_faces("/some/video.mp4", db_path=tmp_path / "idx.sqlite", force=True)
+
+    conn = sqlite3.connect(tmp_path / "idx.sqlite")
+    rows = conn.execute("SELECT COUNT(*) FROM face_detections").fetchone()[0]
+    assert rows == 1, f"force=True should replace, not append; got {rows} rows"
+
+
 def test_extract_faces_raises_when_extra_missing(tmp_path, monkeypatch):
     """If insightface is not importable, raise InsightFaceMissingError."""
     monkeypatch.setitem(sys.modules, "insightface", None)
@@ -303,6 +324,73 @@ def test_faces_find_by_label_and_find_by_embedding(tmp_path):
         assert sim >= 0.5
 
 
+def test_orphan_labels_can_be_reattached_after_recluster(tmp_path):
+    """A labeled cluster that gets orphaned by a recluster can be relabeled onto a new cluster."""
+    config.set_db_override(tmp_path / "idx.sqlite")
+    rng = np.random.RandomState(53)
+    c1 = rng.randn(512).astype(np.float32)
+    c1 /= np.linalg.norm(c1)
+    embs = []
+    for _ in range(8):
+        e = c1 + 0.02 * rng.randn(512).astype(np.float32)
+        embs.append([e / np.linalg.norm(e)])
+
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "5"*64, "/v.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    vid = conn.execute("SELECT id FROM videos").fetchone()[0]
+    _seed_synthetic_detections(conn, video_id=vid, frame_dir=tmp_path, embeddings_per_frame=embs)
+    conn.close()
+
+    from reelgrep.faces import Faces, cluster_faces
+    cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    faces = Faces(db_path=tmp_path / "idx.sqlite")
+    cluster_id = faces.list_clusters()[0].id
+    faces.label_cluster(cluster_id, "Person A")
+
+    # Now wipe and re-seed with completely different embeddings so the old centroid
+    # no longer matches anything; "Person A" will be orphaned by carry-over.
+    conn = sqlite3.connect(tmp_path / "idx.sqlite")
+    conn.execute("DELETE FROM face_detections")
+    rng2 = np.random.RandomState(91)
+    c2 = rng2.randn(512).astype(np.float32)
+    c2 /= np.linalg.norm(c2)
+    # Re-seed orthogonal-ish embeddings (NEW video so the recluster sees a distinct centroid).
+    for i in range(8):
+        e = c2 + 0.02 * rng2.randn(512).astype(np.float32)
+        e /= np.linalg.norm(e)
+        # Insert directly under the SAME video for simplicity (frames already exist? add new ones).
+        cur = conn.execute(
+            "INSERT INTO frames(video_id, timestamp_ms, path, sampling_strategy) VALUES (?,?,?,?)",
+            (vid, 100000 + i * 1000, str(tmp_path / f"orth_{i}.jpg"), "every_n"),
+        )
+        (tmp_path / f"orth_{i}.jpg").write_bytes(b"x")
+        conn.execute(
+            "INSERT INTO face_detections(frame_id, bbox_x, bbox_y, bbox_w, bbox_h, "
+            "embedding, embedding_model, detected_at) VALUES (?,?,?,?,?,?,?,?)",
+            (cur.lastrowid, 0, 0, 80, 100, e.tobytes(),
+             "insightface_buffalo_l", "2026-05-18T00:00:00Z"),
+        )
+    conn.commit()
+    conn.close()
+
+    report = cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    # The original "Person A" label snapshot was the OLD centroid (c1), and the new
+    # cluster centroid is c2 — far outside the label_carry_threshold.
+    assert "Person A" in report.labels_orphaned
+
+    # Now the user can re-attach by labeling the new cluster — this must not collide.
+    faces = Faces(db_path=tmp_path / "idx.sqlite")
+    new_clusters = faces.list_clusters()
+    assert len(new_clusters) >= 1, "expected at least one new cluster"
+    faces.label_cluster(new_clusters[0].id, "Person A")  # must not raise
+    assert faces.find_by_label("Person A")
+
+
 def test_faces_label_collision_raises(tmp_path):
     """Labeling cluster B with a name already on cluster A raises FacesError."""
     config.set_db_override(tmp_path / "idx.sqlite")
@@ -338,6 +426,39 @@ def test_faces_label_collision_raises(tmp_path):
     faces.label_cluster(clusters[0].id, "X")
     with pytest.raises(FacesError, match="already on cluster"):
         faces.label_cluster(clusters[1].id, "X")
+
+
+def test_purge_video_wipes_clusters_to_force_recompute(tmp_path):
+    """After purging a video's detections, cluster tables are cleared so a recompute is required."""
+    config.set_db_override(tmp_path / "idx.sqlite")
+    rng = np.random.RandomState(31)
+    c = rng.randn(512).astype(np.float32)
+    c /= np.linalg.norm(c)
+    embs = []
+    for _ in range(6):
+        e = c + 0.02 * rng.randn(512).astype(np.float32)
+        embs.append([e / np.linalg.norm(e)])
+
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "9"*64, "/v.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    vid = conn.execute("SELECT id FROM videos").fetchone()[0]
+    _seed_synthetic_detections(conn, video_id=vid, frame_dir=tmp_path, embeddings_per_frame=embs)
+    conn.close()
+
+    from reelgrep.faces import Faces, cluster_faces
+    cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    faces = Faces(db_path=tmp_path / "idx.sqlite")
+    assert len(faces.list_clusters()) >= 1
+    n = faces.purge_video("/v.mp4")
+    assert n >= 1
+    # Both detections and clusters cleared.
+    assert faces.detection_count() == 0
+    assert faces.list_clusters() == []
 
 
 def test_faces_purge_video_and_purge_all(tmp_path):

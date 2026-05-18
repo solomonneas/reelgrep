@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.1",
+    "numpy>=1.24",
     "pydantic>=2.5",
     "pillow>=10.0",
     "pysrt>=1.1",
@@ -41,7 +42,6 @@ dev = [
 face = [
     "insightface>=0.7",
     "onnxruntime>=1.16",
-    "numpy>=1.24",
     "hdbscan>=0.8.40",
 ]
 vision = [

@@ -135,6 +135,13 @@ def extract_faces(
                 skipped_existing=True,
             )
 
+    if force:
+        conn.execute(
+            "DELETE FROM face_detections WHERE embedding_model = ? AND frame_id IN ("
+            "SELECT id FROM frames WHERE video_id = ?)",
+            (embedding_model, video_id),
+        )
+
     frames = conn.execute(
         "SELECT id, path FROM frames WHERE video_id = ? ORDER BY timestamp_ms",
         (video_id,),
@@ -252,6 +259,10 @@ def cluster_faces(
 
     # Snapshot labeled centroids BEFORE wiping clusters.
     label_snapshots: list[tuple[str, np.ndarray]] = []
+    # Labels whose cluster has no surviving members (e.g. detections were
+    # purged out from under them); these are immediately orphaned because
+    # there is no centroid to compare against.
+    pre_orphaned: list[str] = []
     for cid, label in conn.execute(
         "SELECT id, label FROM face_clusters WHERE label IS NOT NULL"
     ):
@@ -261,6 +272,7 @@ def cluster_faces(
             (cid,),
         )]
         if not member_blobs:
+            pre_orphaned.append(label)
             continue
         centroid = _normalize(np.mean(
             np.stack([_normalize(_decode_embedding(b)) for b in member_blobs]), axis=0,
@@ -320,7 +332,7 @@ def cluster_faces(
 
     # Reattach labels by centroid proximity.
     labels_carried = 0
-    orphaned: list[str] = []
+    orphaned: list[str] = list(pre_orphaned)
     taken: set[int] = set()
     for label, snap_centroid in label_snapshots:
         best_cid, best_sim = None, -1.0
@@ -339,10 +351,6 @@ def cluster_faces(
             labels_carried += 1
         else:
             orphaned.append(label)
-            conn.execute(
-                "INSERT INTO face_clusters(label, size, computed_at) VALUES (?,?,?)",
-                (label, 0, now),
-            )
 
     conn.commit()
     conn.close()
@@ -551,8 +559,13 @@ class Faces:
                 "(SELECT id FROM frames WHERE video_id = ?)",
                 (row[0],),
             )
+            deleted = cur.rowcount or 0
+            if deleted > 0:
+                # Cluster sizes / rep ids are now stale; force a recompute by wiping.
+                conn.execute("DELETE FROM face_cluster_members")
+                conn.execute("DELETE FROM face_clusters")
             conn.commit()
-            return cur.rowcount or 0
+            return deleted
         finally:
             conn.close()
 
