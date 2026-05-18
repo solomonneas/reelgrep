@@ -225,3 +225,147 @@ def test_cluster_faces_preserves_label_across_rerun(tmp_path):
     conn = sqlite3.connect(tmp_path / "idx.sqlite")
     labels = [r[0] for r in conn.execute("SELECT label FROM face_clusters WHERE label IS NOT NULL")]
     assert labels == ["Speaker A"]
+
+
+def test_faces_list_and_get_cluster(tmp_path):
+    config.set_db_override(tmp_path / "idx.sqlite")
+    rng = np.random.RandomState(99)
+    c1 = rng.randn(512).astype(np.float32)
+    c1 /= np.linalg.norm(c1)
+    c2 = rng.randn(512).astype(np.float32)
+    c2 /= np.linalg.norm(c2)
+    embs = []
+    for _ in range(6):
+        e = c1 + 0.02 * rng.randn(512).astype(np.float32)
+        embs.append([e / np.linalg.norm(e)])
+    for _ in range(8):
+        e = c2 + 0.02 * rng.randn(512).astype(np.float32)
+        embs.append([e / np.linalg.norm(e)])
+
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "9"*64, "/v.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    vid = conn.execute("SELECT id FROM videos").fetchone()[0]
+    _seed_synthetic_detections(conn, video_id=vid, frame_dir=tmp_path, embeddings_per_frame=embs)
+    conn.close()
+
+    from reelgrep.faces import Faces, cluster_faces
+    cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+
+    faces = Faces(db_path=tmp_path / "idx.sqlite")
+    clusters = faces.list_clusters()
+    assert len(clusters) == 2
+    assert clusters[0].size >= clusters[1].size  # ranked desc by size
+    detail = faces.get_cluster(clusters[0].id)
+    assert detail.size == clusters[0].size
+    members = faces.cluster_members(clusters[0].id)
+    assert len(members) == clusters[0].size
+
+
+def test_faces_find_by_label_and_find_by_embedding(tmp_path):
+    config.set_db_override(tmp_path / "idx.sqlite")
+    rng = np.random.RandomState(123)
+    c = rng.randn(512).astype(np.float32)
+    c /= np.linalg.norm(c)
+    raw = [c + 0.02 * rng.randn(512).astype(np.float32) for _ in range(7)]
+    embs = [[e / np.linalg.norm(e)] for e in raw]
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "8"*64, "/v.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    vid = conn.execute("SELECT id FROM videos").fetchone()[0]
+    _seed_synthetic_detections(conn, video_id=vid, frame_dir=tmp_path, embeddings_per_frame=embs)
+    conn.close()
+
+    from reelgrep.faces import Faces, cluster_faces
+    cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    faces = Faces(db_path=tmp_path / "idx.sqlite")
+    clusters = faces.list_clusters()
+    assert clusters, "cluster_faces should have produced at least one cluster"
+    cluster_id = clusters[0].id
+    faces.label_cluster(cluster_id, "Speaker A")
+
+    by_label = faces.find_by_label("Speaker A")
+    assert len(by_label) >= 1
+
+    query = c + 0.01 * rng.randn(512).astype(np.float32)
+    query /= np.linalg.norm(query)
+    top = faces.find_by_embedding(query, top_k=3, min_similarity=0.5)
+    assert 1 <= len(top) <= 3
+    for _det, sim in top:
+        assert sim >= 0.5
+
+
+def test_faces_label_collision_raises(tmp_path):
+    """Labeling cluster B with a name already on cluster A raises FacesError."""
+    config.set_db_override(tmp_path / "idx.sqlite")
+    rng = np.random.RandomState(77)
+    c1 = rng.randn(512).astype(np.float32)
+    c1 /= np.linalg.norm(c1)
+    c2 = rng.randn(512).astype(np.float32)
+    c2 /= np.linalg.norm(c2)
+    embs = []
+    for _ in range(6):
+        e = c1 + 0.02 * rng.randn(512).astype(np.float32)
+        embs.append([e / np.linalg.norm(e)])
+    for _ in range(8):
+        e = c2 + 0.02 * rng.randn(512).astype(np.float32)
+        embs.append([e / np.linalg.norm(e)])
+
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "7"*64, "/v.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    vid = conn.execute("SELECT id FROM videos").fetchone()[0]
+    _seed_synthetic_detections(conn, video_id=vid, frame_dir=tmp_path, embeddings_per_frame=embs)
+    conn.close()
+
+    from reelgrep.faces import Faces, FacesError, cluster_faces
+    cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    faces = Faces(db_path=tmp_path / "idx.sqlite")
+    clusters = faces.list_clusters()
+    assert len(clusters) >= 2, f"expected >=2 clusters, got {len(clusters)}"
+    faces.label_cluster(clusters[0].id, "X")
+    with pytest.raises(FacesError, match="already on cluster"):
+        faces.label_cluster(clusters[1].id, "X")
+
+
+def test_faces_purge_video_and_purge_all(tmp_path):
+    config.set_db_override(tmp_path / "idx.sqlite")
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "a"*64, "/a.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "b"*64, "/b.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    va = conn.execute("SELECT id FROM videos WHERE path='/a.mp4'").fetchone()[0]
+    vb = conn.execute("SELECT id FROM videos WHERE path='/b.mp4'").fetchone()[0]
+    e = np.ones(512, dtype=np.float32) / np.sqrt(512)
+    _seed_synthetic_detections(conn, video_id=va, frame_dir=tmp_path, embeddings_per_frame=[[e]])
+    _seed_synthetic_detections(conn, video_id=vb, frame_dir=tmp_path, embeddings_per_frame=[[e]])
+    conn.close()
+
+    from reelgrep.faces import Faces
+    faces = Faces(db_path=tmp_path / "idx.sqlite")
+    assert faces.detection_count() == 2
+    n = faces.purge_video("/a.mp4")
+    assert n == 1
+    assert faces.detection_count() == 1
+    faces.purge_all()
+    assert faces.detection_count() == 0

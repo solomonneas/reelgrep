@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,6 +23,9 @@ __all__ = [
     "EMBEDDING_DIM",
     "ClusterReport",
     "ExtractFacesResult",
+    "FaceCluster",
+    "FaceDetection",
+    "Faces",
     "FacesError",
     "InsightFaceMissingError",
     "cluster_faces",
@@ -350,3 +354,214 @@ def cluster_faces(
         labels_orphaned=orphaned,
         computed_at=now,
     )
+
+
+@dataclass(frozen=True)
+class FaceDetection:
+    id: int
+    frame_id: int
+    video_id: int
+    video_path: str
+    timestamp_ms: int
+    bbox: tuple[int, int, int, int]
+    frame_path: str
+    embedding_model: str
+    detected_at: str
+
+
+@dataclass(frozen=True)
+class FaceCluster:
+    id: int
+    label: str | None
+    size: int
+    rep_detection_id: int | None
+    computed_at: str
+
+
+class Faces:
+    """Read-and-update API over the face_detections / face_clusters tables."""
+
+    def __init__(self, *, db_path: Path | None = None) -> None:
+        settings = get_settings()
+        self._db_path = Path(db_path) if db_path is not None else settings.db_path
+        if not self._db_path.exists():
+            raise FacesError(f"index does not exist at {self._db_path}")
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = connect(self._db_path)
+        migrate(conn)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    def list_clusters(
+        self, *, labeled_only: bool = False, limit: int | None = None,
+    ) -> list[FaceCluster]:
+        sql = "SELECT id, label, size, rep_detection_id, computed_at FROM face_clusters"
+        params: tuple[Any, ...] = ()
+        if labeled_only:
+            sql += " WHERE label IS NOT NULL"
+        sql += " ORDER BY size DESC, id ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (int(limit),)
+        conn = self._conn()
+        try:
+            return [FaceCluster(*row) for row in conn.execute(sql, params)]
+        finally:
+            conn.close()
+
+    def get_cluster(self, cluster_id: int) -> FaceCluster:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT id, label, size, rep_detection_id, computed_at "
+                "FROM face_clusters WHERE id = ?",
+                (cluster_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise FacesError(f"no cluster with id {cluster_id}")
+        return FaceCluster(*row)
+
+    def cluster_members(
+        self, cluster_id: int, *, limit: int | None = None,
+    ) -> list[FaceDetection]:
+        sql = (
+            "SELECT fd.id, fd.frame_id, f.video_id, v.path, f.timestamp_ms, "
+            "fd.bbox_x, fd.bbox_y, fd.bbox_w, fd.bbox_h, f.path, "
+            "fd.embedding_model, fd.detected_at "
+            "FROM face_cluster_members m "
+            "JOIN face_detections fd ON fd.id = m.detection_id "
+            "JOIN frames f ON f.id = fd.frame_id "
+            "JOIN videos v ON v.id = f.video_id "
+            "WHERE m.cluster_id = ? ORDER BY m.distance ASC"
+        )
+        params: tuple[Any, ...] = (cluster_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (cluster_id, int(limit))
+        conn = self._conn()
+        try:
+            return [
+                FaceDetection(
+                    id=r[0], frame_id=r[1], video_id=r[2], video_path=r[3],
+                    timestamp_ms=r[4], bbox=(r[5], r[6], r[7], r[8]),
+                    frame_path=r[9], embedding_model=r[10], detected_at=r[11],
+                )
+                for r in conn.execute(sql, params)
+            ]
+        finally:
+            conn.close()
+
+    def find_by_label(self, label: str) -> list[FaceDetection]:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM face_clusters WHERE label = ?", (label,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return []
+        return self.cluster_members(row[0])
+
+    def find_by_embedding(
+        self, embedding: np.ndarray, *, top_k: int = 25, min_similarity: float = 0.5,
+    ) -> list[tuple[FaceDetection, float]]:
+        if embedding.shape != (EMBEDDING_DIM,):
+            raise FacesError(
+                f"embedding shape {embedding.shape}, expected ({EMBEDDING_DIM},)"
+            )
+        q = _normalize(embedding.astype(np.float32))
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT fd.id, fd.frame_id, f.video_id, v.path, f.timestamp_ms, "
+                "fd.bbox_x, fd.bbox_y, fd.bbox_w, fd.bbox_h, f.path, "
+                "fd.embedding_model, fd.detected_at, fd.embedding "
+                "FROM face_detections fd "
+                "JOIN frames f ON f.id = fd.frame_id "
+                "JOIN videos v ON v.id = f.video_id"
+            ).fetchall()
+        finally:
+            conn.close()
+        scored: list[tuple[FaceDetection, float]] = []
+        for r in rows:
+            emb = _normalize(_decode_embedding(r[12]))
+            sim = float(q @ emb)
+            if sim < min_similarity:
+                continue
+            scored.append((
+                FaceDetection(
+                    id=r[0], frame_id=r[1], video_id=r[2], video_path=r[3],
+                    timestamp_ms=r[4], bbox=(r[5], r[6], r[7], r[8]),
+                    frame_path=r[9], embedding_model=r[10], detected_at=r[11],
+                ),
+                sim,
+            ))
+        scored.sort(key=lambda t: t[1], reverse=True)
+        return scored[:top_k]
+
+    def label_cluster(self, cluster_id: int, label: str | None) -> None:
+        # get_cluster raises if missing.
+        self.get_cluster(cluster_id)
+        conn = self._conn()
+        try:
+            if label is not None:
+                clash = conn.execute(
+                    "SELECT id FROM face_clusters WHERE label = ? AND id != ?",
+                    (label, cluster_id),
+                ).fetchone()
+                if clash is not None:
+                    raise FacesError(
+                        f"label {label!r} already on cluster {clash[0]}; "
+                        f"clear that one or pick another label"
+                    )
+            conn.execute("UPDATE face_clusters SET label = ? WHERE id = ?",
+                         (label, cluster_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def detection_count(self) -> int:
+        conn = self._conn()
+        try:
+            return conn.execute("SELECT COUNT(*) FROM face_detections").fetchone()[0]
+        finally:
+            conn.close()
+
+    def purge_video(self, video: str | Path) -> int:
+        video_str = str(video)
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM videos WHERE path = ?", (video_str,),
+            ).fetchone()
+            if row is None:
+                # try the resolved form too
+                row = conn.execute(
+                    "SELECT id FROM videos WHERE path = ?",
+                    (str(Path(video).resolve()),),
+                ).fetchone()
+            if row is None:
+                return 0
+            cur = conn.execute(
+                "DELETE FROM face_detections WHERE frame_id IN "
+                "(SELECT id FROM frames WHERE video_id = ?)",
+                (row[0],),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+
+    def purge_all(self) -> None:
+        conn = self._conn()
+        try:
+            conn.execute("DELETE FROM face_cluster_members")
+            conn.execute("DELETE FROM face_clusters")
+            conn.execute("DELETE FROM face_detections")
+            conn.commit()
+        finally:
+            conn.close()
