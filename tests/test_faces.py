@@ -133,3 +133,95 @@ def test_extract_faces_raises_when_extra_missing(tmp_path, monkeypatch):
     from reelgrep.faces import InsightFaceMissingError, extract_faces
     with pytest.raises(InsightFaceMissingError):
         extract_faces("/some/video.mp4", db_path=tmp_path / "idx.sqlite")
+
+
+def _seed_synthetic_detections(conn, *, video_id, frame_dir, embeddings_per_frame):
+    """Insert frames + face_detections from a list[list[np.ndarray]]."""
+    for i, embs in enumerate(embeddings_per_frame):
+        fpath = frame_dir / f"sf{i}.jpg"
+        fpath.write_bytes(b"x")
+        cur = conn.execute(
+            "INSERT INTO frames(video_id, timestamp_ms, path, sampling_strategy) "
+            "VALUES (?,?,?,?)",
+            (video_id, i * 5000, str(fpath), "every_n"),
+        )
+        fid = cur.lastrowid
+        for j, e in enumerate(embs):
+            e = e.astype(np.float32)
+            conn.execute(
+                "INSERT INTO face_detections(frame_id, bbox_x, bbox_y, bbox_w, bbox_h, "
+                "embedding, embedding_model, detected_at) VALUES (?,?,?,?,?,?,?,?)",
+                (fid, 10 * j, 20 * j, 80, 100, e.tobytes(),
+                 "insightface_buffalo_l", "2026-05-18T00:00:00Z"),
+            )
+    conn.commit()
+
+
+def test_cluster_faces_finds_three_well_separated_clusters(tmp_path):
+    """Three Gaussian-separated identity clusters with 10 detections each become 3 clusters."""
+    config.set_db_override(tmp_path / "idx.sqlite")
+    rng = np.random.RandomState(42)
+    centers = [rng.randn(512).astype(np.float32) * 5 for _ in range(3)]
+    centers = [c / np.linalg.norm(c) for c in centers]
+    embs_per_frame: list[list[np.ndarray]] = []
+    for c in centers:
+        for _ in range(10):
+            e = c + 0.05 * rng.randn(512).astype(np.float32)
+            e /= np.linalg.norm(e)
+            embs_per_frame.append([e])
+
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "f"*64, "/v.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    vid = conn.execute("SELECT id FROM videos").fetchone()[0]
+    _seed_synthetic_detections(
+        conn, video_id=vid, frame_dir=tmp_path, embeddings_per_frame=embs_per_frame,
+    )
+    conn.close()
+
+    from reelgrep.faces import cluster_faces
+    report = cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    assert report.clusters_found == 3
+    assert report.detections_clustered == 30
+    assert report.noise_detections == 0
+
+
+def test_cluster_faces_preserves_label_across_rerun(tmp_path):
+    """A labeled cluster keeps its label after recluster when its centroid stays close."""
+    config.set_db_override(tmp_path / "idx.sqlite")
+    rng = np.random.RandomState(7)
+    c = rng.randn(512).astype(np.float32)
+    c /= np.linalg.norm(c)
+    embs = []
+    for _ in range(8):
+        e = c + 0.03 * rng.randn(512).astype(np.float32)
+        e /= np.linalg.norm(e)
+        embs.append([e])
+
+    conn = connect(tmp_path / "idx.sqlite")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO videos(file_hash, path, duration_ms, ingested_at, probe_json) "
+        "VALUES (?,?,?,?,?)",
+        ("blake2b:" + "e"*64, "/v.mp4", 100000, "2026-05-18T00:00:00Z", "{}"),
+    )
+    vid = conn.execute("SELECT id FROM videos").fetchone()[0]
+    _seed_synthetic_detections(conn, video_id=vid, frame_dir=tmp_path, embeddings_per_frame=embs)
+    conn.close()
+
+    from reelgrep.faces import cluster_faces
+    cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    conn = sqlite3.connect(tmp_path / "idx.sqlite")
+    conn.execute("UPDATE face_clusters SET label = ? WHERE id = ?", ("Speaker A", 1))
+    conn.commit()
+    conn.close()
+
+    # Re-run; the same detections should re-cluster the same way and re-attach the label.
+    cluster_faces(min_cluster_size=5, db_path=tmp_path / "idx.sqlite")
+    conn = sqlite3.connect(tmp_path / "idx.sqlite")
+    labels = [r[0] for r in conn.execute("SELECT label FROM face_clusters WHERE label IS NOT NULL")]
+    assert labels == ["Speaker A"]
