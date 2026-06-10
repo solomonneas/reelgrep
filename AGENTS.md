@@ -4,13 +4,15 @@ reelgrep is a local video search and media analysis toolkit. Python 3.11+, hatch
 packaging, CLI entry point `reelgrep = reelgrep.cli:main` (click group).
 
 ## Definition of Done
-A code change is done only when BOTH pass, run from the repo root (`.venv/` works
-without activation):
-- `.venv/bin/ruff check src tests`
-- `.venv/bin/pytest`
+```
+./scripts/verify
+```
+It runs `.venv/bin/ruff check src tests` then `.venv/bin/pytest` from the repo root.
+
+A code change is done only when it exits 0 (`.venv/` works without activation).
 
 Report actual results. If anything fails, report the failure verbatim and do not
-claim success. Never report done without running both.
+claim success. Never report done without running it.
 
 ## Layout
 - Source under `src/reelgrep/`. One file per subcommand in `src/reelgrep/commands/`.
