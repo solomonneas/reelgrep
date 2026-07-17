@@ -24,15 +24,15 @@ jobs:
       matrix:
         python: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install package
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,face,vision,whisper,web,align]"
       - name: Lint
         run: ruff check .
       - name: Tests
