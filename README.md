@@ -2,9 +2,9 @@
 
 > Local video search and media analysis. Find people, outfits, objects, scenes, spoken phrases, and useful clips inside your own video library.
 
-Status: v0.4.0. Align command shipped: when a clean official transcript exists (PDF / TXT / MD) you can map it onto the Whisper timestamps to get accurate timing PLUS the institution's exact text. Web UI, transcription, and the TypeScript MCP wrapper (separate repo) all still work as before.
+Current release: v0.4.0. It includes transcript alignment for PDF, TXT, and MD sources, the local web UI, transcription, and the TypeScript MCP wrapper.
 
-reelgrep indexes video files on disk: it runs `ffprobe` for metadata, samples frames at a configurable interval, builds contact sheets, extracts embedded and sidecar subtitles into a SQLite FTS5 table you can grep, and exports clips, screenshots, and animated WebP loops with a JSON manifest sidecar for each output. Person and object detection is pluggable, with a face-embedding backend and an Ollama vision-LLM backend; both accept confirmed positive AND negative reference images so lookalikes do not slip through. Everything runs on your machine - frames, clips, manifests, and the index all stay on disk under your home directory by default, and nothing leaves the box without you configuring it to.
+reelgrep indexes video files on disk: it runs `ffprobe` for metadata, samples frames at a configurable interval, builds contact sheets, extracts embedded and sidecar subtitles into a SQLite FTS5 table you can grep, and exports clips, screenshots, and animated WebP loops with a JSON manifest sidecar for each output. Person and object detection is pluggable, with a face-embedding backend and an Ollama vision-LLM backend; both accept confirmed positive and negative reference images so lookalikes do not slip through. Everything runs on your machine - frames, clips, manifests, and the index all stay on disk under your home directory by default, and nothing leaves the box without you configuring it to.
 
 ## Why
 
@@ -56,18 +56,18 @@ brew install ffmpeg
 ### Ingest a video
 
 ```bash
-reelgrep ingest ~/Videos/some-talk.mp4
+reelgrep ingest /tmp/reelgrep-demo/demo.mp4
 ```
 
-Output:
+Synthetic example output:
 
 ```text
-ingested: /home/you/Videos/some-talk.mp4
-hash:     blake2b:8f3a91c4e6b7d2a05f1c4e6b7d2a05f1c4e6b7d2a05f1c4e6b7d2a05f1c4e6b7
-duration: 00:42:18.500
-subtitle tracks: 1 (cues: 482)
-frames sampled: 508
-db:       /home/you/.local/share/reelgrep/index.sqlite
+ingested: /tmp/reelgrep-demo/demo.mp4
+hash:     blake2b:7343ecbd3429d7c3839e8e444bf8be180c84c1d01d528559d09c7f92d61ae75c
+duration: 00:00:12.000
+subtitle tracks: 1 (cues: 3)
+frames sampled: 3
+db:       /tmp/reelgrep-demo/home/index.sqlite
 ```
 
 Ingest probes the file, samples one frame every five seconds by default (`--every 5`), pulls any embedded subtitle streams plus matching `.srt`/`.vtt` sidecars, and writes everything into the local index. Re-running on the same file is a no-op unless you pass `--force`.
@@ -75,16 +75,14 @@ Ingest probes the file, samples one frame every five seconds by default (`--ever
 ### Search what was said
 
 ```bash
-reelgrep search-subtitles ~/Videos/some-talk.mp4 "kubernetes"
+reelgrep search-subtitles /tmp/reelgrep-demo/demo.mp4 "kubernetes"
 ```
 
-Output:
+Synthetic example output:
 
 ```text
-00:04:12.300  so this is where kubernetes comes in
-00:11:45.880  kubernetes scheduling is fundamentally a bin-packing problem
-00:27:03.120  the kubernetes control plane has five core components
-3 matches
+00:00:04.000  Today we are covering Kubernetes networking.
+1 matches
 ```
 
 Requires either embedded subtitles, a sidecar `.srt`/`.vtt` next to the video, or Whisper-transcribed cues (see next section). The `[whisper]` extra adds local transcription so screen recordings, lectures, and other un-captioned videos become searchable.
@@ -92,21 +90,10 @@ Requires either embedded subtitles, a sidecar `.srt`/`.vtt` next to the video, o
 ### Transcribe a video without subtitles
 
 ```bash
-reelgrep transcribe ~/Videos/lecture.mp4 --model tiny
+reelgrep transcribe /tmp/reelgrep-demo/lecture.mp4 --model tiny
 ```
 
-Output:
-
-```text
-transcribing lecture.mp4 with whisper:tiny...
-transcribed: /home/you/Videos/lecture.mp4
-language:    en
-model:       whisper:tiny
-cues:        165
-span:        00:00:01.460 -> 00:18:44.070
-```
-
-Real numbers from an 18-minute 720p lecture screen recording: `tiny` model finishes in ~26 seconds on CPU and produces searchable cues. Larger models (`small`, `medium`, `large-v3`, `large-v3-turbo`) trade speed for accuracy. After transcribing, `reelgrep search-subtitles` works against the new cues immediately.
+Larger models (`small`, `medium`, `large-v3`, `large-v3-turbo`) trade speed for accuracy. After transcribing, `reelgrep search-subtitles` works against the new cues immediately.
 
 The cues are stored alongside any embedded or sidecar subtitles with `source='whisper'`, so the index treats them uniformly. Re-running transcribe on the same video is a no-op unless you pass `--force`. Pass `--no-db` to print the cues as JSON to stdout instead of writing to the index.
 
@@ -114,24 +101,27 @@ You can also fold transcription into ingest itself: `reelgrep ingest ~/lecture.m
 
 ### Align an official transcript onto Whisper timestamps
 
-If the institution ships a clean prose transcript next to the video (Canvas / Kaltura courses, conference talk hosts that post the speaker's text afterwards), Whisper's transcription is the wrong source of truth - the official transcript is cleaner and uses correct terminology. `reelgrep align` maps the official text onto the Whisper-derived timestamps so you keep accurate timing AND the canonical wording.
+If the institution ships a clean prose transcript next to the video (Canvas / Kaltura courses, conference talk hosts that post the speaker's text afterwards), Whisper's transcription is the wrong source of truth - the official transcript is cleaner and uses correct terminology. `reelgrep align` maps the official text onto the Whisper-derived timestamps so you keep accurate timing and the canonical wording.
 
 ```bash
-reelgrep align ~/Videos/lecture.mp4 --transcript ~/Videos/lecture_transcript.pdf --out lecture.srt
+reelgrep align /tmp/reelgrep-demo/demo.mp4 \
+  --transcript /tmp/reelgrep-demo/demo_transcript.txt \
+  --language en \
+  --out /tmp/reelgrep-demo/aligned.srt
 ```
 
-Output:
+Synthetic example output:
 
 ```text
-aligned:        /home/you/Videos/lecture.mp4
-transcript:     /home/you/Videos/lecture_transcript.pdf
+aligned:        /tmp/reelgrep-demo/demo.mp4
+transcript:     /tmp/reelgrep-demo/demo_transcript.txt
 language:       en
-cues:           221 (matched 2631/2650 transcript words, coverage 99.3%)
-avg similarity: 0.98
-srt:            /home/you/lecture.srt
+cues:           3 (matched 18/18 transcript words, coverage 100.0%)
+avg similarity: 1.00
+srt:            /tmp/reelgrep-demo/aligned.srt
 ```
 
-Real numbers from an 18-minute USF lecture aligned against the course's official PDF transcript: 221 cues, 99.3% coverage of transcript words, 0.98 average similarity. The aligned cues preserve official terminology ("module one" vs Whisper's "module 1"), proper punctuation, and capitalization that Whisper either drops or mis-spells.
+Aligned cues preserve the transcript's terminology, punctuation, and capitalization while keeping the Whisper timestamps.
 
 Accepts `.txt`, `.md`, `.pdf` transcripts. Auto-runs `whisper:tiny` if no cues exist for the video yet, so the typical flow is one-shot. Cues land in the `subtitles` table with `source='aligned'` so they coexist with `whisper`, `embedded`, and `sidecar` sources. The optional `--out file.srt` writes a standard SRT file you can hand to a video player.
 
@@ -145,34 +135,19 @@ reelgrep serve
 
 Opens `http://127.0.0.1:8765/` in your default browser. The UI surfaces every ingested video in a sidebar, every cue (embedded, sidecar, or Whisper) in a searchable Subtitles tab per video, every sampled frame in a paginated grid with a lightbox, every person-search result with thumbnails grouped by confidence, and every export artifact with its manifest sidecar link.
 
-The headline feature is the search bar in the header: type a phrase once and the UI fans out FTS5 queries across every video in the index, then groups the hits by video. Clicking a hit jumps you straight into that video's Subtitles tab with the term highlighted. With 36 lectures transcribed via `whisper:small`, a single query against "database" returns the full hit list across the semester in under a second.
+The search bar in the header runs an FTS5 query across every video in the index, then groups the hits by video. Clicking a hit opens that video's Subtitles tab with the term highlighted.
 
 The server binds to loopback only by default (`--host 127.0.0.1`), reads exclusively from the local SQLite index, and serves frame and export files via an allow-list (paths must already be referenced in the index - it is not a general filesystem proxy). Pass `--no-open-browser` to skip the auto-launch, `--port` to change the port, and `--reload` for frontend development.
 
 ### Find a specific person
 
 ```bash
-reelgrep find-person ~/Videos/some-talk.mp4 \
+reelgrep find-person /tmp/reelgrep-demo/demo.mp4 \
   --label speaker_a \
-  --positive ~/refs/speaker_a/headshot1.jpg \
-  --positive ~/refs/speaker_a/headshot2.jpg \
-  --negative ~/refs/false_positives/looks_similar_but_isnt.jpg \
-  --out ./speaker_a_matches
-```
-
-Output:
-
-```text
-label:     speaker_a
-backend:   face_embed
-threshold: 0.3
-matches:   12 / 25 (showing top 12)
-
-   00:00:14.500  conf 0.71  face cosine 0.71 vs centroid; margin 0.18 over nearest negative
-   00:00:42.000  conf 0.68  face cosine 0.68 vs centroid; margin 0.15 over nearest negative
-   ...
-manifest:  /home/you/speaker_a_matches/find-person.manifest.json
-exports:   /home/you/speaker_a_matches (12 files)
+  --positive /tmp/reelgrep-demo/refs/speaker_a/headshot1.jpg \
+  --positive /tmp/reelgrep-demo/refs/speaker_a/headshot2.jpg \
+  --negative /tmp/reelgrep-demo/refs/false_positives/lookalike.jpg \
+  --out /tmp/reelgrep-demo/speaker_a_matches
 ```
 
 #### Why negatives matter
@@ -213,7 +188,7 @@ reelgrep separates "where is the video file?" from "what do I want to do with it
 Example:
 
 ```bash
-export JELLYFIN_URL=http://jellyfin.local:8096
+export JELLYFIN_URL=http://media.example.com:8096
 export JELLYFIN_API_KEY=<key>
 reelgrep jellyfin resolve "Talk: Container Networking" | xargs -I {} reelgrep ingest {}
 ```
