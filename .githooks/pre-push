@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+if ! command -v brigade >/dev/null 2>&1; then
+    echo "pre-push: brigade is required to run the content guard" >&2
+    exit 1
+fi
+
+exec brigade guard git --history --range origin/main..HEAD

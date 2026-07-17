@@ -289,6 +289,7 @@ current stability contract.
 ```bash
 git clone https://github.com/solomonneas/reelgrep
 cd reelgrep
+git config core.hooksPath .githooks
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev,face,vision,whisper,web,align]"
 .venv/bin/pytest
