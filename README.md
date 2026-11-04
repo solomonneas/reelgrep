@@ -2,9 +2,9 @@
 
 > Local video search and media analysis. Find people, outfits, objects, scenes, spoken phrases, and useful clips inside your own video library.
 
-Status: v0.5.0. Cross-video face clustering shipped: detect every face in every ingested video, cluster them with HDBSCAN, browse "who's in this library," label clusters, and find any labeled person across the index. Library API, prose-transcript alignment, local Whisper transcription, and the local browser UI all continue to work as before.
+Latest PyPI release: v0.4.0. Cross-video face clustering is on `main` and ships in v0.5.0. Until that release, install it from git: `pipx install "reelgrep[face] @ git+https://github.com/solomonneas/reelgrep"`. Release history is in [CHANGELOG.md](CHANGELOG.md).
 
-reelgrep indexes video files on disk: it runs `ffprobe` for metadata, samples frames at a configurable interval, builds contact sheets, extracts embedded and sidecar subtitles into a SQLite FTS5 table you can grep, and exports clips, screenshots, and animated WebP loops with a JSON manifest sidecar for each output. Person and object detection is pluggable, with a face-embedding backend and an Ollama vision-LLM backend; both accept confirmed positive and negative reference images so lookalikes do not slip through. Everything runs on your machine - frames, clips, manifests, and the index all stay on disk under your home directory by default, and nothing leaves the box without you configuring it to.
+reelgrep indexes video files on disk: it runs `ffprobe` for metadata, samples frames at a configurable interval, builds contact sheets, extracts embedded and sidecar subtitles into a SQLite FTS5 table you can grep, and exports clips, screenshots, and animated WebP loops with a JSON manifest sidecar for each output. Person and object detection is pluggable, with a face-embedding backend and an Ollama vision-LLM backend. Both accept confirmed positive and negative reference images so lookalikes do not slip through. Everything runs on your machine - frames, clips, manifests, and the index all stay on disk under your home directory by default, and nothing leaves the box without you configuring it to.
 
 ## Why
 
@@ -90,10 +90,21 @@ Requires either embedded subtitles, a sidecar `.srt`/`.vtt` next to the video, o
 ### Transcribe a video without subtitles
 
 ```bash
-reelgrep transcribe /tmp/reelgrep-demo/lecture.mp4 --model tiny
+reelgrep transcribe /media/lectures/lecture.mp4 --model tiny
 ```
 
-Larger models (`small`, `medium`, `large-v3`, `large-v3-turbo`) trade speed for accuracy. After transcribing, `reelgrep search-subtitles` works against the new cues immediately.
+Output:
+
+```text
+transcribing lecture.mp4 with whisper:tiny...
+transcribed: /media/lectures/lecture.mp4
+language:    en
+model:       whisper:tiny
+cues:        165
+span:        00:00:01.460 -> 00:18:44.070
+```
+
+Real numbers from an 18-minute 720p lecture screen recording: the `tiny` model finishes in about 26 seconds on CPU. Larger models (`small`, `medium`, `large-v3`, `large-v3-turbo`) trade speed for accuracy. After transcribing, `reelgrep search-subtitles` works against the new cues immediately.
 
 The cues are stored alongside any embedded or sidecar subtitles with `source='whisper'`, so the index treats them uniformly. Re-running transcribe on the same video is a no-op unless you pass `--force`. Pass `--no-db` to print the cues as JSON to stdout instead of writing to the index.
 
@@ -121,7 +132,7 @@ avg similarity: 1.00
 srt:            /tmp/reelgrep-demo/aligned.srt
 ```
 
-Aligned cues preserve the transcript's terminology, punctuation, and capitalization while keeping the Whisper timestamps.
+Aligned cues preserve the transcript's terminology, punctuation, and capitalization while keeping the Whisper timestamps. On a real 18-minute USF lecture aligned against the course's official PDF transcript: 221 cues, 99.3% coverage of transcript words, 0.98 average similarity. The aligned text kept "module one" where Whisper wrote "module 1".
 
 Accepts `.txt`, `.md`, `.pdf` transcripts. Auto-runs `whisper:tiny` if no cues exist for the video yet, so the typical flow is one-shot. Cues land in the `subtitles` table with `source='aligned'` so they coexist with `whisper`, `embedded`, and `sidecar` sources. The optional `--out file.srt` writes a standard SRT file you can hand to a video player.
 
@@ -135,7 +146,7 @@ reelgrep serve
 
 Opens `http://127.0.0.1:8765/` in your default browser. The UI surfaces every ingested video in a sidebar, every cue (embedded, sidecar, or Whisper) in a searchable Subtitles tab per video, every sampled frame in a paginated grid with a lightbox, every person-search result with thumbnails grouped by confidence, and every export artifact with its manifest sidecar link.
 
-The search bar in the header runs an FTS5 query across every video in the index, then groups the hits by video. Clicking a hit opens that video's Subtitles tab with the term highlighted.
+The search bar in the header runs an FTS5 query across every video in the index, then groups the hits by video. Clicking a hit opens that video's Subtitles tab with the term highlighted. With 36 lectures transcribed via `whisper:small`, a query for "database" returns hits across the whole semester in under a second.
 
 The server binds to loopback only by default (`--host 127.0.0.1`), reads exclusively from the local SQLite index, and serves frame and export files via an allow-list (paths must already be referenced in the index - it is not a general filesystem proxy). Pass `--no-open-browser` to skip the auto-launch, `--port` to change the port, and `--reload` for frontend development.
 
@@ -152,7 +163,7 @@ reelgrep find-person /tmp/reelgrep-demo/demo.mp4 \
 
 #### Why negatives matter
 
-Face matching from cast or speaker headshots alone is unreliable - lookalikes, twins, family members, and similar-looking people in similar settings will all score high. reelgrep treats matching as a precision-over-recall job: positive examples anchor the search, and negative examples (a known false positive caught in a prior run, a sibling's photo, a stock image of the same demographic) push lookalikes below the acceptance threshold. The default backend uses cosine distance to the positive centroid minus the nearest negative cosine; the more negatives you provide, the fewer false positives you get back.
+Face matching from cast or speaker headshots alone is unreliable - lookalikes, twins, family members, and similar-looking people in similar settings will all score high. reelgrep treats matching as a precision-over-recall job: positive examples anchor the search, and negative examples (a known false positive caught in a prior run, a sibling's photo, a stock image of the same demographic) push lookalikes below the acceptance threshold. The default backend uses cosine distance to the positive centroid minus the nearest negative cosine. The more negatives you provide, the fewer false positives you get back.
 
 ### Cut a sub-clip
 
@@ -180,7 +191,7 @@ The output is animated WebP, not GIF - smaller files, better quality, supported 
 
 ### Cluster faces across the library
 
-Once `reelgrep[face]` is installed, you can detect every face across every ingested video, cluster them, and browse the result. Discovery and auto-extend share the same underlying detection pool.
+With the `[face]` extra installed, reelgrep can detect every face in every ingested video, group them into clusters with HDBSCAN, and let you name a cluster once to find that person across the whole library.
 
 ```bash
 # 1. Detect faces across every ingested video (idempotent per video):
@@ -193,13 +204,12 @@ reelgrep faces cluster
 reelgrep faces list
 ```
 
-Output:
+Synthetic example output (two test-pattern videos with seeded embeddings, no real faces):
 
 ```text
 cluster    size   label
-#1         42     -
-#2         31     -
-#3         19     -
+#1         8      -
+#2         5      -
 ```
 
 Label one cluster once, then find that person everywhere in the library:
@@ -209,14 +219,17 @@ reelgrep faces label 1 "Speaker A"
 reelgrep faces find "Speaker A"
 ```
 
-Output:
+Synthetic example output:
 
 ```text
-matches: 42
-    14.500s  ~/Videos/lecture-01.mp4  bbox=(120, 80, 220, 280)
-    42.200s  ~/Videos/lecture-01.mp4  bbox=(118, 82, 222, 282)
+matches: 8
+     20.000s  /tmp/reelgrep-demo/talk-networking.mp4  bbox=(480, 140, 220, 260)
+     15.000s  /tmp/reelgrep-demo/talk-networking.mp4  bbox=(480, 140, 220, 260)
+      5.000s  /tmp/reelgrep-demo/talk-databases.mp4  bbox=(260, 150, 210, 250)
    ...
 ```
+
+Matches are sorted by embedding distance to the cluster centroid.
 
 Or fold detection into ingest itself so every new video joins the clustering pool automatically:
 
@@ -224,9 +237,9 @@ Or fold detection into ingest itself so every new video joins the clustering poo
 reelgrep ingest ~/Videos/lecture-02.mp4 --detect-faces
 ```
 
-The local browser UI (`reelgrep serve`) gains a Faces tab: a grid of clusters ranked by size, click-through to member detections (each opens the source video at its timestamp), and an inline label editor.
+The local browser UI (`reelgrep serve`) has a Faces view: a grid of clusters ranked by size, click-through to member detections (each opens the source video at its timestamp), and an inline label editor.
 
-Face embeddings are durable biometric data; see "Storage and privacy" below for purge controls.
+Face embeddings are durable biometric data. See "Storage and privacy" below for purge controls.
 
 ## Backends
 
@@ -245,7 +258,7 @@ reelgrep jellyfin resolve "Talk: Container Networking" | xargs -I {} reelgrep in
 
 ## Person and visual search models
 
-Two backends ship in v0.1.0, both pluggable, both opt-in via extras:
+Two backends ship, both pluggable, both opt-in via extras:
 
 - **face_embed** (default, `[face]` extra): insightface ArcFace 512-dim embeddings. Fast on CPU, deterministic, well-suited to face matching with the positive/negative anchor pattern. Default acceptance threshold `0.30` (cosine margin over nearest negative).
 - **ollama_vision** (`[vision]` extra): per-frame chat against a local Ollama vision model (default `qwen2-vl:7b`, configurable via `OLLAMA_VISION_MODEL`). Slower per frame, but handles "find frames where the speaker is wearing a red jacket" or "find shots of the building exterior" - kinds of queries that pure face embeddings cannot answer. Default acceptance threshold `0.65`.
@@ -274,8 +287,8 @@ current stability contract.
 - The index database lives at `~/.local/share/reelgrep/index.sqlite` by default. Override with `REELGREP_HOME` or `REELGREP_DB`.
 - Sampled frames cache to `~/.local/share/reelgrep/cache/frames/<hash>/` and subtitles to `~/.local/share/reelgrep/cache/subtitles/<hash>/`.
 - Every export (clip, gif, screenshot, contact sheet) writes a JSON manifest sidecar next to it with the parameters and source hash so outputs are reproducible.
-- No telemetry. No background network calls. The Ollama backend talks to the Ollama URL you configure (default `http://127.0.0.1:11434`). The Jellyfin adapter talks only to the URL you set. Everything else stays local.
-- Face detection writes 512-dim float32 embeddings (~2KB per detected face) into the SQLite index in the `face_detections` table. Detection runs ONLY when you opt in via `reelgrep extract-faces`, `reelgrep ingest --detect-faces`, or the library API. Purge everything with `reelgrep faces purge --all` or per-video with `reelgrep faces purge <video> --yes`.
+- reelgrep sends no telemetry and makes no background network calls. The Ollama backend talks to the Ollama URL you configure (default `http://127.0.0.1:11434`). The Jellyfin adapter talks only to the URL you set. Everything else stays local.
+- Face detection writes 512-dim float32 embeddings (~2KB per detected face) into the SQLite index in the `face_detections` table. Detection runs only when you opt in via `reelgrep extract-faces`, `reelgrep ingest --detect-faces`, or the library API. Purge everything with `reelgrep faces purge --all` or per-video with `reelgrep faces purge <video> --yes`.
 - You are responsible for confirming you have the rights to analyze and store frames, clips, and derived data from the videos you process.
 
 ## Configuration reference
@@ -337,13 +350,7 @@ Queued for later releases:
 - Writing thumbnails and chapters back to Jellyfin.
 - True wav2vec2 word-level alignment for cases where cue-level timing isn't tight enough.
 
-Shipped in v0.5.0: cross-video face clustering. New CLI (`reelgrep extract-faces`, `reelgrep faces`), ingest flag (`--detect-faces`), library API (`extract_faces`, `cluster_faces`, `Faces`), and a Faces tab in the local browser UI. See [Cluster faces across the library](#cluster-faces-across-the-library).
-
-Shipped in v0.4.0: prose-transcript alignment (`reelgrep align`) via the `[align]` extra, plus a public Python library API (`reelgrep.index.ingest_video`) for embedders. See [Align an official transcript onto Whisper timestamps](#align-an-official-transcript-onto-whisper-timestamps). The MCP wrapper for agentic use also shipped as its own repo at [solomonneas/reelgrep-mcp](https://github.com/solomonneas/reelgrep-mcp) (`npm install -g reelgrep-mcp`).
-
-Shipped in v0.3.0: local browser UI (`reelgrep serve`) backed by a Starlette JSON API + vanilla HTML/CSS/JS frontend, with cross-library subtitle search as the headline feature. See [Browse the whole library in a local web UI](#browse-the-whole-library-in-a-local-web-ui).
-
-Shipped in v0.2.0: local Whisper transcription via the `[whisper]` extra and the new `reelgrep transcribe` command. See [Transcribe a video without subtitles](#transcribe-a-video-without-subtitles).
+Release history is in [CHANGELOG.md](CHANGELOG.md). The MCP wrapper for agent use lives in its own repo at [solomonneas/reelgrep-mcp](https://github.com/solomonneas/reelgrep-mcp).
 
 ## License
 
