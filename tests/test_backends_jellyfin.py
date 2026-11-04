@@ -32,7 +32,7 @@ def test_registry_lists_jellyfin() -> None:
 
 def test_get_backend_returns_instance() -> None:
     backend = get_backend(
-        "jellyfin", base_url="http://j.local", api_key="x", transport=lambda **_: {}
+        "jellyfin", base_url="http://jellyfin.example.com", api_key="x", transport=lambda **_: {}
     )
     assert isinstance(backend, JellyfinBackend)
 
@@ -139,34 +139,34 @@ def test_http_request_without_url(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_http_request_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JELLYFIN_URL", raising=False)
     monkeypatch.delenv("JELLYFIN_API_KEY", raising=False)
-    backend = JellyfinBackend(base_url="http://j.local")
+    backend = JellyfinBackend(base_url="http://jellyfin.example.com")
     with pytest.raises(BackendError, match="JELLYFIN_API_KEY"):
         backend.resolve(HEX_ID)
 
 
 def test_env_var_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JELLYFIN_URL", "http://j.local")
+    monkeypatch.setenv("JELLYFIN_URL", "http://jellyfin.example.com")
     monkeypatch.setenv("JELLYFIN_API_KEY", "secret")
     backend = JellyfinBackend()
-    assert backend._base_url == "http://j.local"
+    assert backend._base_url == "http://jellyfin.example.com"
     assert backend._api_key == "secret"
 
 
 def test_trailing_slash_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JELLYFIN_URL", "http://j.local/")
+    monkeypatch.setenv("JELLYFIN_URL", "http://jellyfin.example.com/")
     monkeypatch.setenv("JELLYFIN_API_KEY", "secret")
     backend = JellyfinBackend()
-    assert backend._base_url == "http://j.local"
+    assert backend._base_url == "http://jellyfin.example.com"
 
 
 def test_http_404_surfaces_as_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_urlopen(*_args: Any, **_kwargs: Any):
         raise urllib.error.HTTPError(
-            "http://j.local/Items/" + HEX_ID, 404, "Not Found", {}, None
+            "http://jellyfin.example.com/Items/" + HEX_ID, 404, "Not Found", {}, None
         )
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    backend = JellyfinBackend(base_url="http://j.local", api_key="secret")
+    backend = JellyfinBackend(base_url="http://jellyfin.example.com", api_key="secret")
     with pytest.raises(BackendError, match="HTTP 404"):
         backend.resolve(HEX_ID)
 
@@ -178,6 +178,6 @@ def test_connection_failure_surfaces_as_backend_error(
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    backend = JellyfinBackend(base_url="http://j.local", api_key="secret")
+    backend = JellyfinBackend(base_url="http://jellyfin.example.com", api_key="secret")
     with pytest.raises(BackendError, match="jellyfin connection failed"):
         backend.resolve(HEX_ID)
