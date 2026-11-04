@@ -27,7 +27,6 @@ def create_app(
         from starlette.middleware import Middleware
         from starlette.middleware.base import BaseHTTPMiddleware
         from starlette.middleware.cors import CORSMiddleware
-        from starlette.middleware.trustedhost import TrustedHostMiddleware
         from starlette.requests import Request
         from starlette.responses import FileResponse, JSONResponse, Response
         from starlette.routing import Route
@@ -39,7 +38,20 @@ def create_app(
     hosts = list(DEFAULT_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts)
     origin_hosts = {host.strip("[]").lower() for host in hosts}
 
-    async def check_origin(request: Request, call_next):
+    async def guard_request(request: Request, call_next):
+        authority = request.headers.get("host", "").lower()
+        if authority.startswith("["):
+            host, closing, suffix = authority[1:].partition("]")
+            if not closing or (suffix and not (
+                suffix.startswith(":") and suffix[1:].isascii() and suffix[1:].isdigit()
+            )):
+                host = None
+        else:
+            host, separator, port = authority.partition(":")
+            if separator and not (port.isascii() and port.isdigit()):
+                host = None
+        if not host or host not in origin_hosts:
+            return JSONResponse({"detail": "Invalid host header"}, status_code=400)
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
             if origin is not None:
@@ -425,8 +437,7 @@ def create_app(
         return FileResponse(str(target_path), media_type=mime or "application/octet-stream")
 
     middleware = [
-        Middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False),
-        Middleware(BaseHTTPMiddleware, dispatch=check_origin),
+        Middleware(BaseHTTPMiddleware, dispatch=guard_request),
         Middleware(
             CORSMiddleware,
             allow_origins=["http://127.0.0.1", "http://localhost"],

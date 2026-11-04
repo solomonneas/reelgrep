@@ -640,3 +640,37 @@ def test_label_normalizes_strings(client, seeded_db, label, expected):
         f"/api/faces/clusters/{cluster_id}", json={"label": label},
     ).status_code == 200
     assert client.get(f"/api/faces/clusters/{cluster_id}").json()["cluster"]["label"] == expected
+
+
+@pytest.mark.parametrize("host,status", [
+    ("[::1]:8765", 200),
+    ("[::1]", 200),
+    ("evil.example", 400),
+    ("127.0.0.1.evil.example", 400),
+    ("localhost:8765", 200),
+    ("LOCALHOST:8765", 200),
+    ("", 400),
+    (None, 400),
+    ("[::1]evil.example", 400),
+])
+def test_host_guard(seeded_db, host, status):
+    import asyncio
+
+    import httpx
+
+    async def request():
+        app = create_app(db_path=seeded_db[0])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1",
+        ) as client:
+            request = client.build_request("GET", "/api/health")
+            if host is None:
+                del request.headers["Host"]
+            else:
+                request.headers["Host"] = host
+            return await client.send(request)
+
+    response = asyncio.run(request())
+    assert response.status_code == status
+    if status == 400:
+        assert response.json() == {"detail": "Invalid host header"}

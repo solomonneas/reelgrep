@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -570,3 +571,55 @@ def test_purge_video_warns_when_clustering_unavailable(tmp_path, monkeypatch):
         assert faces.purge_video("/a.mp4") == 12
     assert faces.detection_count() == 12
     assert faces.list_clusters() == []
+
+
+@pytest.mark.parametrize("all_", [True, False])
+def test_purge_warns_for_busy_wal_then_recovers(tmp_path, all_):
+    from reelgrep.faces import Faces, PurgeIncompleteWarning
+
+    db_path, _ = _seed_purge_library(tmp_path)
+    faces = Faces(db_path=db_path)
+    reader = sqlite3.connect(db_path)
+    try:
+        reader.execute("BEGIN")
+        assert reader.execute("SELECT COUNT(*) FROM face_detections").fetchone()[0] == 24
+        with pytest.warns(PurgeIncompleteWarning, match="deleted face data may remain"):
+            if all_:
+                faces.purge_all()
+            else:
+                faces.purge_video("/a.mp4")
+        assert faces.detection_count() == (0 if all_ else 12)
+    finally:
+        reader.close()
+    with warnings.catch_warnings(record=True) as notices:
+        warnings.simplefilter("always")
+        if all_:
+            faces.purge_all()
+        else:
+            faces.purge_video("/a.mp4")
+    assert not notices
+
+
+def test_truncate_wal_retries_after_reader_closes(tmp_path, monkeypatch):
+    from reelgrep.faces import _truncate_wal
+
+    db_path, _ = _seed_purge_library(tmp_path)
+    reader = sqlite3.connect(db_path)
+    writer = connect(db_path)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT * FROM face_detections").fetchall()
+        writer.execute("DELETE FROM face_detections")
+        writer.commit()
+        writer.execute("PRAGMA busy_timeout=0")
+
+        def release_reader(seconds):
+            assert seconds == 0.2
+            reader.close()
+
+        monkeypatch.setattr("reelgrep.faces.time.sleep", release_reader)
+        assert _truncate_wal(writer) is True
+        assert db_path.with_name(db_path.name + "-wal").stat().st_size == 0
+    finally:
+        reader.close()
+        writer.close()

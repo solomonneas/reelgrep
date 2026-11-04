@@ -49,12 +49,13 @@ def serve(host: str, port: int, reload: bool, open_browser: bool) -> None:
         )
 
     allowed_hosts = list(DEFAULT_ALLOWED_HOSTS)
-    if host in {"0.0.0.0", "::"}:
+    if host.lower() not in {"127.0.0.1", "localhost", "::1", "[::1]"}:
         click.echo(
-            "Warning: the UI has no authentication; only loopback Host headers are accepted.",
+            "Warning: reelgrep serve has no authentication. Any client that can reach "
+            "this address can read the index and edit face labels.",
             err=True,
         )
-    elif host not in allowed_hosts:
+    if host not in {"0.0.0.0", "::"} and host not in allowed_hosts:
         allowed_hosts.append(host)
     app = create_app(db_path=settings.db_path, allowed_hosts=allowed_hosts)
     # Mount static assets and SPA fallback onto the API app. The /api/* and

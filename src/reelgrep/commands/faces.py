@@ -148,18 +148,21 @@ def faces_purge(ctx: click.Context, target: str | None, all_: bool) -> None:
         raise click.UsageError("either pass a VIDEO path or --all to wipe everything")
     try:
         faces = Faces()
-        if all_:
-            faces.purge_all()
-            click.echo("deleted all face data")
-            return
-        from reelgrep.faces import ClustersResetWarning
+        from reelgrep.faces import ClustersResetWarning, PurgeIncompleteWarning
 
         with warnings.catch_warnings(record=True) as notices:
             warnings.simplefilter("always", ClustersResetWarning)
-            n = faces.purge_video(target)
+            warnings.simplefilter("always", PurgeIncompleteWarning)
+            if all_:
+                faces.purge_all()
+            else:
+                n = faces.purge_video(target)
         for notice in notices:
             click.echo(f"warning: {notice.message}", err=True)
-        click.echo(f"deleted {n} detections for {target}")
+        if all_:
+            click.echo("deleted all face data")
+        else:
+            click.echo(f"deleted {n} detections for {target}")
     except FacesError as exc:
         click.echo(f"error: {exc}", err=True)
         ctx.exit(1)

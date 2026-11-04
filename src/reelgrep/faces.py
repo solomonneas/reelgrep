@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import sys
+import time
 import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ __all__ = [
     "Faces",
     "FacesError",
     "InsightFaceMissingError",
+    "PurgeIncompleteWarning",
     "cluster_faces",
     "extract_faces",
 ]
@@ -49,6 +51,32 @@ class HdbscanMissingError(FacesError):
 
 class ClustersResetWarning(UserWarning):
     """Purging succeeded, but unavailable clustering required a cluster reset."""
+
+
+class PurgeIncompleteWarning(UserWarning):
+    """Deleted face data may remain in a WAL held open by another connection."""
+
+
+def _truncate_wal(conn: sqlite3.Connection) -> bool:
+    """Try a checkpoint, retrying up to three times while another reader is busy.
+
+    The connection's busy timeout (5 s by default in Python's sqlite3) would otherwise
+    apply to every attempt, so it is set to 0 here and restored afterwards.
+    """
+    previous_timeout = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+    conn.execute("PRAGMA busy_timeout = 0")
+    try:
+        for attempt in range(4):
+            busy, _log, _checkpointed = conn.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            if busy == 0:
+                return True
+            if attempt < 3:
+                time.sleep(0.2)
+        return False
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {previous_timeout}")
 
 
 class InsightFaceMissingError(FacesError):
@@ -580,7 +608,7 @@ class Faces:
             )
             deleted = cur.rowcount or 0
             conn.commit()
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            _truncate_wal(conn)
             if deleted > 0:
                 try:
                     cluster_faces(db_path=self._db_path)
@@ -592,7 +620,12 @@ class Faces:
                         "clusters reset; run `reelgrep faces cluster`",
                         ClustersResetWarning, stacklevel=2,
                     )
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            if not _truncate_wal(conn):
+                warnings.warn(PurgeIncompleteWarning(
+                    "could not truncate the SQLite WAL because another connection has the "
+                    "index open; deleted face data may remain in the -wal file until the next "
+                    "checkpoint. Close other reelgrep processes and run the purge again."
+                ), stacklevel=2)
             return deleted
         finally:
             conn.close()
@@ -605,6 +638,11 @@ class Faces:
             conn.execute("DELETE FROM face_clusters")
             conn.execute("DELETE FROM face_detections")
             conn.commit()
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            if not _truncate_wal(conn):
+                warnings.warn(PurgeIncompleteWarning(
+                    "could not truncate the SQLite WAL because another connection has the "
+                    "index open; deleted face data may remain in the -wal file until the next "
+                    "checkpoint. Close other reelgrep processes and run the purge again."
+                ), stacklevel=2)
         finally:
             conn.close()

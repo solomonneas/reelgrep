@@ -142,3 +142,22 @@ def test_purge_reports_cluster_reset_without_hdbscan(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "clusters reset; run `reelgrep faces cluster`" in result.stderr
     assert "deleted 12 detections" in result.output
+
+
+@pytest.mark.parametrize("all_", [True, False])
+def test_purge_prints_incomplete_warning(tmp_path, all_):
+    import sqlite3
+
+    _seed_clustered(tmp_path)
+    from reelgrep.config import get_settings
+
+    reader = sqlite3.connect(get_settings().db_path)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT * FROM face_detections").fetchall()
+        target = "--all" if all_ else "/v.mp4"
+        result = CliRunner().invoke(cli, ["faces", "purge", target, "--yes"])
+        assert result.exit_code == 0, result.output
+        assert "warning: could not truncate the SQLite WAL" in result.stderr
+    finally:
+        reader.close()

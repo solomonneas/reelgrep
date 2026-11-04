@@ -191,7 +191,9 @@ def test_serve_smoke_invocation(
     assert result.exit_code == 0, result.output
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.1", "localhost"])
+@pytest.mark.parametrize("host", [
+    "0.0.0.0", "::", "192.0.2.10", "localhost", "127.0.0.1", "::1", "[::1]",
+])
 def test_bind_host_controls_allow_list(monkeypatch, fake_web_app, host):
     import uvicorn
 
@@ -202,8 +204,12 @@ def test_bind_host_controls_allow_list(monkeypatch, fake_web_app, host):
     assert {"127.0.0.1", "localhost", "[::1]"} <= set(allowed)
     if host in {"0.0.0.0", "::"}:
         assert host not in allowed
-        assert "no authentication" in result.stderr
-        assert "only loopback Host headers are accepted" in result.stderr
     else:
         assert host in allowed
-        assert "no authentication" not in result.stderr
+    if host in {"127.0.0.1", "localhost", "::1", "[::1]"}:
+        assert "Warning:" not in result.stderr
+    else:
+        assert (
+            "Warning: reelgrep serve has no authentication. Any client that can reach "
+            "this address can read the index and edit face labels."
+        ) in result.stderr
