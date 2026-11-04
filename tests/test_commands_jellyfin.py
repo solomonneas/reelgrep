@@ -42,7 +42,7 @@ def test_resolve_happy_path(monkeypatch):
     def fake_init(self, *, base_url=None, api_key=None, timeout=30.0,
                   verify_ssl=True, transport=None):
         self._transport = lambda **_: None
-        self._base_url = "http://j.local"
+        self._base_url = "http://jellyfin.example.com"
         self._api_key = "x"
         self._timeout = timeout
         self._verify_ssl = verify_ssl

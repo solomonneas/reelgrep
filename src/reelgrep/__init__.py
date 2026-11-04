@@ -26,6 +26,17 @@ from reelgrep.backends import (
     list_backends,
 )
 from reelgrep.backends import register as register_backend
+from reelgrep.faces import (
+    ClusterReport,
+    ExtractFacesResult,
+    FaceCluster,
+    FaceDetection,
+    Faces,
+    FacesError,
+    InsightFaceMissingError,
+    cluster_faces,
+    extract_faces,
+)
 from reelgrep.index import (
     IngestResult,
     IngestWarning,
@@ -51,15 +62,22 @@ from reelgrep.transcribe import (
     transcribe_video,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "BaseBackend",
     "BasePersonModel",
+    "ClusterReport",
     "DetectionHit",
+    "ExtractFacesResult",
+    "FaceCluster",
+    "FaceDetection",
+    "Faces",
+    "FacesError",
     "FrameRow",
     "IngestResult",
     "IngestWarning",
+    "InsightFaceMissingError",
     "InvalidQueryError",
     "Search",
     "SearchError",
@@ -67,6 +85,8 @@ __all__ = [
     "TranscribeError",
     "TranscribeResult",
     "__version__",
+    "cluster_faces",
+    "extract_faces",
     "get_backend",
     "get_person_model",
     "ingest_video",

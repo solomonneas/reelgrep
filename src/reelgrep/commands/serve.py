@@ -38,7 +38,7 @@ def serve(host: str, port: int, reload: bool, open_browser: bool) -> None:
             "reelgrep serve requires the [web] extra: pip install reelgrep[web]"
         ) from exc
 
-    from reelgrep.web.app import create_app
+    from reelgrep.web.app import DEFAULT_ALLOWED_HOSTS, create_app
 
     settings = ensure_dirs(get_settings())
 
@@ -48,7 +48,16 @@ def serve(host: str, port: int, reload: bool, open_browser: bool) -> None:
             f"frontend assets missing at {static_dir} - reinstall reelgrep"
         )
 
-    app = create_app(db_path=settings.db_path)
+    allowed_hosts = list(DEFAULT_ALLOWED_HOSTS)
+    if host.lower() not in {"127.0.0.1", "localhost", "::1", "[::1]"}:
+        click.echo(
+            "Warning: reelgrep serve has no authentication. Any client that can reach "
+            "this address can read the index and edit face labels.",
+            err=True,
+        )
+    if host not in {"0.0.0.0", "::"} and host not in allowed_hosts:
+        allowed_hosts.append(host)
+    app = create_app(db_path=settings.db_path, allowed_hosts=allowed_hosts)
     # Mount static assets and SPA fallback onto the API app. The /api/* and
     # /file routes are already registered inside create_app; appending the
     # static mounts last means they only catch unmatched paths.

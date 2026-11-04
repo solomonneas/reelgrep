@@ -114,18 +114,18 @@ def test_config_dict_defaults():
 
 def test_env_var_defaults(monkeypatch):
     """OLLAMA_URL and OLLAMA_VISION_MODEL env vars seed the instance fields."""
-    monkeypatch.setenv("OLLAMA_URL", "http://o.local")
+    monkeypatch.setenv("OLLAMA_URL", "http://ollama.example.com")
     monkeypatch.setenv("OLLAMA_VISION_MODEL", "llava:13b")
     model = OllamaVisionModel()
     cfg = model.config_dict()
-    assert cfg["base_url"] == "http://o.local"
+    assert cfg["base_url"] == "http://ollama.example.com"
     assert cfg["model"] == "llava:13b"
 
 
 def test_explicit_base_url_strips_trailing_slash():
     """Trailing slash on an explicit base_url is stripped."""
-    model = OllamaVisionModel(base_url="http://o.local/")
-    assert model.config_dict()["base_url"] == "http://o.local"
+    model = OllamaVisionModel(base_url="http://ollama.example.com/")
+    assert model.config_dict()["base_url"] == "http://ollama.example.com"
 
 
 def test_empty_positives_raises(tmp_path):

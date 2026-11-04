@@ -5,20 +5,27 @@ from __future__ import annotations
 import json
 import mimetypes
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 _VALID_EXPORT_KINDS = {"screenshot", "clip", "gif", "contact_sheet"}
 _DEFAULT_LIMIT = 200
 _MAX_LIMIT = 1000
 
 
-def create_app(db_path: Path | None = None):
+def create_app(
+    db_path: Path | None = None, *, allowed_hosts: Sequence[str] | None = None,
+):
     """Build the Starlette application bound to the given SQLite index."""
     try:
         from starlette.applications import Starlette
         from starlette.exceptions import HTTPException
         from starlette.middleware import Middleware
+        from starlette.middleware.base import BaseHTTPMiddleware
         from starlette.middleware.cors import CORSMiddleware
         from starlette.requests import Request
         from starlette.responses import FileResponse, JSONResponse, Response
@@ -27,6 +34,34 @@ def create_app(db_path: Path | None = None):
         raise RuntimeError(
             "reelgrep web requires the [web] extra: pip install reelgrep[web]"
         ) from exc
+
+    hosts = list(DEFAULT_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts)
+    origin_hosts = {host.strip("[]").lower() for host in hosts}
+
+    async def guard_request(request: Request, call_next):
+        authority = request.headers.get("host", "").lower()
+        if authority.startswith("["):
+            host, closing, suffix = authority[1:].partition("]")
+            if not closing or (suffix and not (
+                suffix.startswith(":") and suffix[1:].isascii() and suffix[1:].isdigit()
+            )):
+                host = None
+        else:
+            host, separator, port = authority.partition(":")
+            if separator and not (port.isascii() and port.isdigit()):
+                host = None
+        if not host or host not in origin_hosts:
+            return JSONResponse({"detail": "Invalid host header"}, status_code=400)
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if origin is not None:
+                try:
+                    host = urlsplit(origin).hostname
+                except ValueError:
+                    host = None
+                if host not in origin_hosts:
+                    return JSONResponse({"detail": "Origin host not allowed"}, status_code=403)
+        return await call_next(request)
 
     from reelgrep import __version__
     from reelgrep.config import ensure_dirs
@@ -280,6 +315,99 @@ def create_app(db_path: Path | None = None):
         finally:
             conn.close()
 
+    async def faces_clusters(request: Request) -> JSONResponse:
+        from reelgrep.faces import Faces
+
+        labeled_only = (
+            request.query_params.get("labeled_only", "false").lower() == "true"
+        )
+        limit_raw = request.query_params.get("limit")
+        limit_val: int | None = None
+        if limit_raw is not None:
+            try:
+                limit_val = int(limit_raw)
+            except ValueError as exc:
+                raise HTTPException(400, "limit must be an integer") from exc
+
+        faces = Faces(db_path=resolved_db_path)
+        clusters = faces.list_clusters(labeled_only=labeled_only, limit=limit_val)
+        return JSONResponse(
+            {
+                "clusters": [
+                    {
+                        "id": c.id,
+                        "label": c.label,
+                        "size": c.size,
+                        "rep_detection_id": c.rep_detection_id,
+                        "computed_at": c.computed_at,
+                    }
+                    for c in clusters
+                ],
+            }
+        )
+
+    async def faces_cluster_detail(request: Request) -> JSONResponse:
+        from reelgrep.faces import Faces, FacesError
+
+        cluster_id = int(request.path_params["cluster_id"])
+        faces = Faces(db_path=resolved_db_path)
+        try:
+            cluster = faces.get_cluster(cluster_id)
+        except FacesError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        members = faces.cluster_members(cluster_id)
+        return JSONResponse(
+            {
+                "cluster": {
+                    "id": cluster.id,
+                    "label": cluster.label,
+                    "size": cluster.size,
+                    "rep_detection_id": cluster.rep_detection_id,
+                    "computed_at": cluster.computed_at,
+                },
+                "members": [
+                    {
+                        "id": m.id,
+                        "video_id": m.video_id,
+                        "video_path": m.video_path,
+                        "frame_id": m.frame_id,
+                        "frame_path": m.frame_path,
+                        "timestamp_ms": m.timestamp_ms,
+                        "bbox": list(m.bbox),
+                    }
+                    for m in members
+                ],
+            }
+        )
+
+    async def faces_cluster_label(request: Request) -> JSONResponse:
+        from reelgrep.faces import ClusterNotFoundError, Faces, FacesError
+
+        cluster_id = int(request.path_params["cluster_id"])
+        try:
+            body = await request.json()
+        except ValueError as exc:
+            raise HTTPException(400, "body must be JSON") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be a JSON object")
+        if "label" not in body:
+            raise HTTPException(400, "label is required")
+        label = body["label"]
+        if label is not None and not isinstance(label, str):
+            raise HTTPException(400, "label must be a string or null")
+        if isinstance(label, str):
+            if len(label) > 200:
+                raise HTTPException(400, "label must be at most 200 characters")
+            label = label.strip() or None
+        faces = Faces(db_path=resolved_db_path)
+        try:
+            faces.label_cluster(cluster_id, label)
+        except ClusterNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except FacesError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return JSONResponse({"ok": True})
+
     async def serve_file(request: Request) -> Response:
         raw = request.query_params.get("path", "")
         if not raw:
@@ -309,10 +437,11 @@ def create_app(db_path: Path | None = None):
         return FileResponse(str(target_path), media_type=mime or "application/octet-stream")
 
     middleware = [
+        Middleware(BaseHTTPMiddleware, dispatch=guard_request),
         Middleware(
             CORSMiddleware,
             allow_origins=["http://127.0.0.1", "http://localhost"],
-            allow_methods=["GET"],
+            allow_methods=["GET", "PATCH"],
         ),
     ]
 
@@ -325,6 +454,17 @@ def create_app(db_path: Path | None = None):
         Route("/api/searches", list_searches),
         Route("/api/searches/{search_id:int}", get_search),
         Route("/api/exports", list_exports),
+        Route("/api/faces/clusters", faces_clusters, methods=["GET"]),
+        Route(
+            "/api/faces/clusters/{cluster_id:int}",
+            faces_cluster_detail,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/faces/clusters/{cluster_id:int}",
+            faces_cluster_label,
+            methods=["PATCH"],
+        ),
         Route("/file", serve_file),
     ]
 
