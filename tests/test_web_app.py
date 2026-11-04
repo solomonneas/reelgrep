@@ -143,7 +143,7 @@ def client(seeded_db):
 
     db_path, _, _ = seeded_db
     app = create_app(db_path=db_path)
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1")
 
 
 # ---------------------------------------------------------------------------
@@ -598,3 +598,45 @@ def test_faces_cluster_label_patch_409_on_collision(client, seeded_db):
         f"/api/faces/clusters/{cluster_id}", json={"label": "Bob"}
     )
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize("host", ["evil.example", "testserver"])
+def test_untrusted_host_rejected(client, host):
+    assert client.get("/api/health", headers={"Host": host}).status_code == 400
+
+
+@pytest.mark.parametrize("origin,status", [
+    ("http://evil.example", 403),
+    ("null", 403),
+    ("http://127.0.0.1:8765", 200),
+    ("http://localhost:8765", 200),
+    ("http://[::1]:8765", 200),
+])
+def test_label_origin_guard(client, seeded_db, origin, status):
+    cluster_id = _seed_face_clusters(seeded_db[0])
+    response = client.patch(
+        f"/api/faces/clusters/{cluster_id}", json={"label": "updated"},
+        headers={"Origin": origin},
+    )
+    assert response.status_code == status
+    label = client.get(f"/api/faces/clusters/{cluster_id}").json()["cluster"]["label"]
+    assert label == ("updated" if status == 200 else "Alice")
+
+
+@pytest.mark.parametrize("body", [{}, {"label": []}, {"label": {}}, {"label": 5},
+                                  {"label": 1.5}, {"label": True}, {"label": False},
+                                  {"label": "x" * 201}])
+def test_label_rejects_invalid_values(client, seeded_db, body):
+    cluster_id = _seed_face_clusters(seeded_db[0])
+    assert client.patch(f"/api/faces/clusters/{cluster_id}", json=body).status_code == 400
+    assert client.get(f"/api/faces/clusters/{cluster_id}").json()["cluster"]["label"] == "Alice"
+
+
+@pytest.mark.parametrize("label,expected", [("  Speaker  ", "Speaker"), (" \t ", None),
+                                            ("x" * 200, "x" * 200)])
+def test_label_normalizes_strings(client, seeded_db, label, expected):
+    cluster_id = _seed_face_clusters(seeded_db[0])
+    assert client.patch(
+        f"/api/faces/clusters/{cluster_id}", json={"label": label},
+    ).status_code == 200
+    assert client.get(f"/api/faces/clusters/{cluster_id}").json()["cluster"]["label"] == expected

@@ -1,6 +1,8 @@
 """`reelgrep faces` CLI group: list, show, label, find, cluster, purge."""
 from __future__ import annotations
 
+import warnings
+
 import click
 
 from reelgrep.faces import Faces, FacesError, cluster_faces
@@ -150,7 +152,13 @@ def faces_purge(ctx: click.Context, target: str | None, all_: bool) -> None:
             faces.purge_all()
             click.echo("deleted all face data")
             return
-        n = faces.purge_video(target)
+        from reelgrep.faces import ClustersResetWarning
+
+        with warnings.catch_warnings(record=True) as notices:
+            warnings.simplefilter("always", ClustersResetWarning)
+            n = faces.purge_video(target)
+        for notice in notices:
+            click.echo(f"warning: {notice.message}", err=True)
         click.echo(f"deleted {n} detections for {target}")
     except FacesError as exc:
         click.echo(f"error: {exc}", err=True)

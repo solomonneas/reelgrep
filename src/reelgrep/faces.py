@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import sys
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ DEFAULT_EMBEDDING_MODEL = "insightface_buffalo_l"
 __all__ = [
     "EMBEDDING_DIM",
     "ClusterReport",
+    "ClusterNotFoundError",
     "ExtractFacesResult",
     "FaceCluster",
     "FaceDetection",
@@ -35,6 +37,18 @@ __all__ = [
 
 class FacesError(RuntimeError):
     """Base class for reelgrep.faces errors."""
+
+
+class ClusterNotFoundError(FacesError):
+    """Raised when a requested face cluster does not exist."""
+
+
+class HdbscanMissingError(FacesError):
+    """Raised when clustering is unavailable."""
+
+
+class ClustersResetWarning(UserWarning):
+    """Purging succeeded, but unavailable clustering required a cluster reset."""
 
 
 class InsightFaceMissingError(FacesError):
@@ -211,7 +225,7 @@ def _load_hdbscan() -> Any:
     try:
         import hdbscan  # type: ignore
     except Exception as exc:
-        raise FacesError(
+        raise HdbscanMissingError(
             "hdbscan is required for clustering. Install reelgrep with the [face] extra: "
             "pipx install 'reelgrep[face]'"
         ) from exc
@@ -251,6 +265,8 @@ def cluster_faces(
     rows = conn.execute("SELECT id, embedding FROM face_detections").fetchall()
     now = datetime.now(UTC).isoformat(timespec="seconds")
     if not rows:
+        conn.execute("DELETE FROM face_cluster_members")
+        conn.execute("DELETE FROM face_clusters")
         conn.commit()
         conn.close()
         return ClusterReport(0, 0, 0, 0, [], now)
@@ -290,11 +306,13 @@ def cluster_faces(
         cluster_selection_method="eom",
         algorithm="generic",
     )
-    labels = clusterer.fit_predict(X)
+    labels = (
+        clusterer.fit_predict(X) if len(X) > min_cluster_size else np.full(len(X), -1)
+    )
     # Fallback: HDBSCAN cannot recognize a single isolated cluster without help.
     # When the default pass marks everything as noise, retry with allow_single_cluster
     # so a tight blob of one identity still produces a cluster.
-    if (labels >= 0).sum() == 0:
+    if len(X) >= min_cluster_size and (labels >= 0).sum() == 0:
         fallback = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=2,
@@ -429,7 +447,7 @@ class Faces:
         finally:
             conn.close()
         if row is None:
-            raise FacesError(f"no cluster with id {cluster_id}")
+            raise ClusterNotFoundError(f"no cluster with id {cluster_id}")
         return FaceCluster(*row)
 
     def cluster_members(
@@ -543,6 +561,7 @@ class Faces:
         video_str = str(video)
         conn = self._conn()
         try:
+            conn.execute("PRAGMA secure_delete=ON")
             row = conn.execute(
                 "SELECT id FROM videos WHERE path = ?", (video_str,),
             ).fetchone()
@@ -560,11 +579,20 @@ class Faces:
                 (row[0],),
             )
             deleted = cur.rowcount or 0
-            if deleted > 0:
-                # Cluster sizes / rep ids are now stale; force a recompute by wiping.
-                conn.execute("DELETE FROM face_cluster_members")
-                conn.execute("DELETE FROM face_clusters")
             conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            if deleted > 0:
+                try:
+                    cluster_faces(db_path=self._db_path)
+                except HdbscanMissingError:
+                    conn.execute("DELETE FROM face_cluster_members")
+                    conn.execute("DELETE FROM face_clusters")
+                    conn.commit()
+                    warnings.warn(
+                        "clusters reset; run `reelgrep faces cluster`",
+                        ClustersResetWarning, stacklevel=2,
+                    )
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             return deleted
         finally:
             conn.close()
@@ -572,9 +600,11 @@ class Faces:
     def purge_all(self) -> None:
         conn = self._conn()
         try:
+            conn.execute("PRAGMA secure_delete=ON")
             conn.execute("DELETE FROM face_cluster_members")
             conn.execute("DELETE FROM face_clusters")
             conn.execute("DELETE FROM face_detections")
             conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn.close()

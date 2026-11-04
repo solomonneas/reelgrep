@@ -490,3 +490,83 @@ def test_faces_purge_video_and_purge_all(tmp_path):
     assert faces.detection_count() == 1
     faces.purge_all()
     assert faces.detection_count() == 0
+
+
+def _seed_purge_library(tmp_path):
+    db_path = tmp_path / "purge.sqlite"
+    conn = connect(db_path)
+    migrate(conn)
+    rng = np.random.RandomState(481)
+    blobs = []
+    for name in ("a", "b"):
+        vid = conn.execute(
+            "INSERT INTO videos(file_hash, path, ingested_at, probe_json) VALUES (?,?,?,?)",
+            (name, f"/{name}.mp4", "2026-05-18T00:00:00Z", "{}"),
+        ).lastrowid
+        center = rng.randn(512).astype(np.float32)
+        center /= np.linalg.norm(center)
+        embeddings = []
+        for _ in range(12):
+            emb = center + 0.005 * rng.randn(512).astype(np.float32)
+            embeddings.append([emb / np.linalg.norm(emb)])
+        frame_dir = tmp_path / name
+        frame_dir.mkdir()
+        _seed_synthetic_detections(
+            conn, video_id=vid, frame_dir=frame_dir, embeddings_per_frame=embeddings,
+        )
+        blobs.append(embeddings[0][0].tobytes())
+    conn.close()
+    return db_path, blobs
+
+
+def test_purge_video_preserves_other_identity_label(tmp_path):
+    from reelgrep.faces import Faces, cluster_faces
+
+    db_path, _ = _seed_purge_library(tmp_path)
+    cluster_faces(db_path=db_path)
+    faces = Faces(db_path=db_path)
+    assert len(faces.list_clusters()) == 2
+    for cluster in faces.list_clusters():
+        name = faces.cluster_members(cluster.id)[0].video_path
+        faces.label_cluster(cluster.id, name)
+    assert faces.purge_video("/a.mp4") == 12
+    surviving = faces.list_clusters(labeled_only=True)
+    assert len(surviving) == 1
+    assert surviving[0].label == "/b.mp4"
+    assert surviving[0].size == len(faces.cluster_members(surviving[0].id))
+    assert surviving[0].rep_detection_id in {
+        detection.id for detection in faces.cluster_members(surviving[0].id)
+    }
+    assert all(d.video_path == "/b.mp4" for d in faces.cluster_members(surviving[0].id))
+
+
+@pytest.mark.parametrize("all_", [False, True])
+def test_purge_erases_embedding_bytes(tmp_path, all_):
+    from reelgrep.faces import Faces
+
+    db_path, blobs = _seed_purge_library(tmp_path)
+    assert blobs[0] in db_path.read_bytes()
+    faces = Faces(db_path=db_path)
+    if all_:
+        faces.purge_all()
+    else:
+        faces.purge_video("/a.mp4")
+    for path in (db_path, db_path.with_name(db_path.name + "-wal")):
+        if path.exists():
+            contents = path.read_bytes()
+            assert blobs[0] not in contents
+            if all_:
+                assert blobs[1] not in contents
+
+
+def test_purge_video_warns_when_clustering_unavailable(tmp_path, monkeypatch):
+    from reelgrep.faces import ClustersResetWarning, Faces, cluster_faces
+
+    db_path, _ = _seed_purge_library(tmp_path)
+    cluster_faces(db_path=db_path)
+    monkeypatch.setitem(__import__("sys").modules, "hdbscan", None)
+    faces = Faces(db_path=db_path)
+    with pytest.warns(ClustersResetWarning, match="clusters reset"):
+        assert faces.purge_video("/a.mp4") == 12
+    assert faces.detection_count() == 12
+    assert faces.list_clusters() == []

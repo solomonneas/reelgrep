@@ -131,3 +131,14 @@ def test_faces_purge_all(tmp_path):
     result = CliRunner().invoke(cli, ["faces", "purge", "--all", "--yes"])
     assert result.exit_code == 0, result.output
     assert "deleted all" in result.output.lower() or "all" in result.output.lower()
+
+
+def test_purge_reports_cluster_reset_without_hdbscan(tmp_path, monkeypatch):
+    import sys
+
+    _seed_clustered(tmp_path)
+    monkeypatch.setitem(sys.modules, "hdbscan", None)
+    result = CliRunner().invoke(cli, ["faces", "purge", "/v.mp4", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "clusters reset; run `reelgrep faces cluster`" in result.stderr
+    assert "deleted 12 detections" in result.output

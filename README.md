@@ -288,7 +288,7 @@ current stability contract.
 - Sampled frames cache to `~/.local/share/reelgrep/cache/frames/<hash>/` and subtitles to `~/.local/share/reelgrep/cache/subtitles/<hash>/`.
 - Every export (clip, gif, screenshot, contact sheet) writes a JSON manifest sidecar next to it with the parameters and source hash so outputs are reproducible.
 - reelgrep sends no telemetry and makes no background network calls. The Ollama backend talks to the Ollama URL you configure (default `http://127.0.0.1:11434`). The Jellyfin adapter talks only to the URL you set. Everything else stays local.
-- Face detection writes 512-dim float32 embeddings (~2KB per detected face) into the SQLite index in the `face_detections` table. Detection runs only when you opt in via `reelgrep extract-faces`, `reelgrep ingest --detect-faces`, or the library API. Purge everything with `reelgrep faces purge --all` or per-video with `reelgrep faces purge <video> --yes`.
+- Face detection writes 512-dim float32 embeddings (~2KB per detected face) into the SQLite index in the `face_detections` table. Detection runs only when you opt in via `reelgrep extract-faces`, `reelgrep ingest --detect-faces`, or the library API. Purge everything with `reelgrep faces purge --all` or per-video with `reelgrep faces purge <video> --yes`. Purge overwrites deleted rows in the index, but copies of the index in backups or snapshots need separate deletion.
 - You are responsible for confirming you have the rights to analyze and store frames, clips, and derived data from the videos you process.
 
 ## Configuration reference

@@ -5,21 +5,29 @@ from __future__ import annotations
 import json
 import mimetypes
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 _VALID_EXPORT_KINDS = {"screenshot", "clip", "gif", "contact_sheet"}
 _DEFAULT_LIMIT = 200
 _MAX_LIMIT = 1000
 
 
-def create_app(db_path: Path | None = None):
+def create_app(
+    db_path: Path | None = None, *, allowed_hosts: Sequence[str] | None = None,
+):
     """Build the Starlette application bound to the given SQLite index."""
     try:
         from starlette.applications import Starlette
         from starlette.exceptions import HTTPException
         from starlette.middleware import Middleware
+        from starlette.middleware.base import BaseHTTPMiddleware
         from starlette.middleware.cors import CORSMiddleware
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
         from starlette.requests import Request
         from starlette.responses import FileResponse, JSONResponse, Response
         from starlette.routing import Route
@@ -27,6 +35,21 @@ def create_app(db_path: Path | None = None):
         raise RuntimeError(
             "reelgrep web requires the [web] extra: pip install reelgrep[web]"
         ) from exc
+
+    hosts = list(DEFAULT_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts)
+    origin_hosts = {host.strip("[]").lower() for host in hosts}
+
+    async def check_origin(request: Request, call_next):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if origin is not None:
+                try:
+                    host = urlsplit(origin).hostname
+                except ValueError:
+                    host = None
+                if host not in origin_hosts:
+                    return JSONResponse({"detail": "Origin host not allowed"}, status_code=403)
+        return await call_next(request)
 
     from reelgrep import __version__
     from reelgrep.config import ensure_dirs
@@ -346,7 +369,7 @@ def create_app(db_path: Path | None = None):
         )
 
     async def faces_cluster_label(request: Request) -> JSONResponse:
-        from reelgrep.faces import Faces, FacesError
+        from reelgrep.faces import ClusterNotFoundError, Faces, FacesError
 
         cluster_id = int(request.path_params["cluster_id"])
         try:
@@ -355,15 +378,22 @@ def create_app(db_path: Path | None = None):
             raise HTTPException(400, "body must be JSON") from exc
         if not isinstance(body, dict):
             raise HTTPException(400, "body must be a JSON object")
-        label = body.get("label")
+        if "label" not in body:
+            raise HTTPException(400, "label is required")
+        label = body["label"]
+        if label is not None and not isinstance(label, str):
+            raise HTTPException(400, "label must be a string or null")
+        if isinstance(label, str):
+            if len(label) > 200:
+                raise HTTPException(400, "label must be at most 200 characters")
+            label = label.strip() or None
         faces = Faces(db_path=resolved_db_path)
         try:
-            faces.label_cluster(cluster_id, label if label else None)
+            faces.label_cluster(cluster_id, label)
+        except ClusterNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
         except FacesError as exc:
-            msg = str(exc)
-            if msg.startswith("no cluster"):
-                raise HTTPException(404, msg) from exc
-            raise HTTPException(400, msg) from exc
+            raise HTTPException(400, str(exc)) from exc
         return JSONResponse({"ok": True})
 
     async def serve_file(request: Request) -> Response:
@@ -395,6 +425,8 @@ def create_app(db_path: Path | None = None):
         return FileResponse(str(target_path), media_type=mime or "application/octet-stream")
 
     middleware = [
+        Middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False),
+        Middleware(BaseHTTPMiddleware, dispatch=check_origin),
         Middleware(
             CORSMiddleware,
             allow_origins=["http://127.0.0.1", "http://localhost"],
